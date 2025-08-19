@@ -69,25 +69,31 @@ class GL:
         # O parâmetro colors é um dicionário com os tipos cores possíveis, para o Polyline2D
         # você pode assumir inicialmente o desenho das linhas com a cor emissiva (emissiveColor).
 
-        print("Polyline2D : lineSegments = {0}".format(lineSegments)) # imprime no terminal
-        print("Polyline2D : colors = {0}".format(colors)) # imprime no terminal as cores
-
         def draw_line(pointA, pointB, color):
+            """
+            A funçao draw_line desenha uma linha entre dois pontos quaisquer.
+            Isso é feito calculando os deltas entre as coordenadas dos pontos,
+            e então escolhendo qual desses deltas é maior (valor absoluto), ou seja, em que eixo 
+            a distância a percorrer desenhando será maior, chamado de step.
+
+            Dado o step, se percorre a distância e, para cada passo, somam se os steps individuais, deltaX ou Y / step, 
+            que será um valor entre 0 e 1, à coordenada atual para x e y, e então um pixel é desenhado
+            na coordenada resultante, se essa coordenada se encontra no quadro (frame buffer).
+            """
             deltaX = pointB[0] - pointA[0]
             deltaY = pointB[1] - pointA[1]
 
             step = max(abs(deltaX), abs(deltaY))
 
-            if step != 0:
-                stepX = deltaX / step
-                stepY = deltaY / step
+            stepX = deltaX / step
+            stepY = deltaY / step
 
-                for i in range(round(step+1)):
-                    cur_x = pointA[0] + round(i * stepX)
-                    cur_y = pointA[1] + round(i * stepY)
+            for i in range(round(step+1)):
+                cur_x = pointA[0] + round(i * stepX)
+                cur_y = pointA[1] + round(i * stepY)
 
-                    if cur_x >= 0 and cur_x < GL.width and cur_y >= 0 and cur_y < GL.height:
-                        gpu.GPU.draw_pixel([cur_x, cur_y], gpu.GPU.RGB8, color)
+                if cur_x >= 0 and cur_x < GL.width and cur_y >= 0 and cur_y < GL.height:
+                    gpu.GPU.draw_pixel([cur_x, cur_y], gpu.GPU.RGB8, color)
 
         for i in range(0, len(lineSegments) - 2, 2):
             pointA = (int(lineSegments[i]), int(lineSegments[i + 1]))
