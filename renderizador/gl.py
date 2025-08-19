@@ -44,15 +44,16 @@ class GL:
         # O parâmetro colors é um dicionário com os tipos cores possíveis, para o Polypoint2D
         # você pode assumir inicialmente o desenho dos pontos com a cor emissiva (emissiveColor).
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Polypoint2D : pontos = {0}".format(point)) # imprime no terminal pontos
-        print("Polypoint2D : colors = {0}".format(colors)) # imprime no terminal as cores
+        # Itera de dois em dois valores pelos pontos
+        for i in range(0, len(point), 2):
+            # Formata os valores de x e y para o formato da função draw_pixel
+            point = [int(point[i]), int(point[i+1])]
 
-        # Exemplo:
-        pos_x = GL.width//2
-        pos_y = GL.height//2
-        gpu.GPU.draw_pixel([pos_x, pos_y], gpu.GPU.RGB8, [255, 0, 0])  # altera pixel (u, v, tipo, r, g, b)
-        # cuidado com as cores, o X3D especifica de (0,1) e o Framebuffer de (0,255)
+            # Formata as cores para o formato do frame_buffer
+            color = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
+
+            # E finalmente, desenha o pixel no Framebuffer
+            gpu.GPU.draw_pixel(point, gpu.GPU.RGB8, color)
         
     @staticmethod
     def polyline2D(lineSegments, colors):
@@ -70,12 +71,31 @@ class GL:
 
         print("Polyline2D : lineSegments = {0}".format(lineSegments)) # imprime no terminal
         print("Polyline2D : colors = {0}".format(colors)) # imprime no terminal as cores
-        
-        # Exemplo:
-        pos_x = GL.width//2
-        pos_y = GL.height//2
-        gpu.GPU.draw_pixel([pos_x, pos_y], gpu.GPU.RGB8, [255, 0, 255])  # altera pixel (u, v, tipo, r, g, b)
-        # cuidado com as cores, o X3D especifica de (0,1) e o Framebuffer de (0,255)
+
+        def draw_line(pointA, pointB, color):
+            deltaX = pointB[0] - pointA[0]
+            deltaY = pointB[1] - pointA[1]
+
+            step = max(abs(deltaX), abs(deltaY))
+
+            if step != 0:
+                stepX = deltaX / step
+                stepY = deltaY / step
+
+                for i in range(round(step+1)):
+                    cur_x = pointA[0] + round(i * stepX)
+                    cur_y = pointA[1] + round(i * stepY)
+
+                    if cur_x >= 0 and cur_x < GL.width and cur_y >= 0 and cur_y < GL.height:
+                        gpu.GPU.draw_pixel([cur_x, cur_y], gpu.GPU.RGB8, color)
+
+        for i in range(0, len(lineSegments) - 2, 2):
+            pointA = (int(lineSegments[i]), int(lineSegments[i + 1]))
+            pointB = (int(lineSegments[i + 2]), int(lineSegments[i + 3]))
+
+            # Formata as cores para o formato do frame_buffer
+            color = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
+            draw_line(pointA, pointB, color)
 
     @staticmethod
     def circle2D(radius, colors):
@@ -107,12 +127,60 @@ class GL:
         # quantidade de pontos é sempre multiplo de 3, ou seja, 6 valores ou 12 valores, etc.
         # O parâmetro colors é um dicionário com os tipos cores possíveis, para o TriangleSet2D
         # você pode assumir inicialmente o desenho das linhas com a cor emissiva (emissiveColor).
-        print("TriangleSet2D : vertices = {0}".format(vertices)) # imprime no terminal
-        print("TriangleSet2D : colors = {0}".format(colors)) # imprime no terminal as cores
+        COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
+        
+        def is_inside(points, p):
+            """
+            A função is_inside analisa se o ponto está em cada um dos semiplanos das arestas do triângulo,
+            e desenha o pixel caso este seja o caso.
+            """
+            def L(p1, p2, p):
+                """
+                A função L retorna se o ponto p -> (x, y) está no semiplano de uma das arestas do triângulo,
+                usando a função:
+                L(x, y) = (y1 - y0)x - (x1 - x0)y + y0(x1 - x0) - x0(y1 - y0)
+                e retornando um valor booleano caso o resultado da função seja maior ou igual a zero,
+                dado o fato que usamos o sistema de coordenadas de pixels, onde o eixo y é orientado
+                para baixo, ao invés de para cima.
+                """
+                result = (p2[1] - p1[1]) * p[0] - (p2[0] - p1[0]) * p[1] + p1[1] * (p2[0] - p1[0]) - p1[0] * (p2[1] - p1[1])
+                return result >= 0
 
-        # Exemplo:
-        gpu.GPU.draw_pixel([6, 8], gpu.GPU.RGB8, [255, 255, 0])  # altera pixel (u, v, tipo, r, g, b)
+            v1, v2, v3 = L(points[0], points[1], p), L(points[1], points[2], p), L(points[2], points[0], p)
+            if v1 and v2 and v3:
+                gpu.GPU.draw_pixel([p[0], p[1]], gpu.GPU.RGB8, COLOR)
+        
+        def order_winding(points):
+            """
+            A função order_winding ordena os vértices do triângulo
+            no sentido anti-horário (winding order).
 
+            Isso é feito calculando o centróide (média das coordenadas
+            dos vértices) e obtendo o ângulo de cada vértice em relação
+            a esse centróide. Esses ângulos são usados para ordenar os 
+            vértices de forma decrescente, pois, diferentemente do círculo
+            trigonométrico convencional (com eixo y para cima), no sistema
+            de coordenadas de píxeis o eixo y cresce para baixo, o que 
+            inverte o sentido do círculo trigonométrico.
+            """
+
+            cx = sum(p[0] for p in points) / len(points)
+            cy = sum(p[1] for p in points) / len(points)
+            
+            ordered = sorted(points, key=(lambda p: math.atan2(p[1] - cy, p[0] - cx)), reverse=True)
+
+            return ordered
+
+        for i in range(0, len(vertices), 6):
+            p1 = (vertices[i], vertices[i+1])
+            p2 = (vertices[i+2], vertices[i+3])
+            p3 = (vertices[i+4], vertices[i+5])
+
+            winding_ordered_points = order_winding([p1, p2, p3])
+
+            for y in range(GL.height):
+                for x in range(GL.width):
+                    is_inside(winding_ordered_points, (x, y))
 
     @staticmethod
     def triangleSet(point, colors):
