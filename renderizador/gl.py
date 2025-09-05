@@ -24,6 +24,14 @@ class GL:
     near = 0.01   # plano de corte próximo
     far = 1000    # plano de corte distante
 
+    stack = []
+
+    def pushmatrix(m):
+       GL.stack.append(m)
+
+    def popmatrix():
+        return GL.stack.pop(-1)
+
     @staticmethod
     def setup(width, height, near=0.01, far=1000):
         """Definr parametros para câmera de razão de aspecto, plano próximo e distante."""
@@ -240,7 +248,7 @@ class GL:
         print("Viewpoint : ", end='')
         print("position = {0} ".format(position), end='')
         print("orientation = {0} ".format(orientation), end='')
-        print("fieldOfView = {0} ".format(fieldOfView))
+        print("fieldOfView = {0} ".format(fieldOfView)) 
 
     @staticmethod
     def transform_in(translation, scale, rotation):
@@ -255,15 +263,99 @@ class GL:
         # Quando começar a usar Transforms dentre de outros Transforms, mais a frente no curso
         # Você precisará usar alguma estrutura de dados pilha para organizar as matrizes.
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Transform : ", end='')
-        if translation:
-            print("translation = {0} ".format(translation), end='') # imprime no terminal
-        if scale:
-            print("scale = {0} ".format(scale), end='') # imprime no terminal
-        if rotation:
-            print("rotation = {0} ".format(rotation), end='') # imprime no terminal
-        print("")
+        def translation_matrix(xt, yt, zt):
+            """
+            A função translation_matrix gera a matriz
+            de translação homogênea a partir dos valores
+            de translação para x, y e z. 
+            """
+            return np.array([
+                [0, 0, 0, xt],
+                [0, 0, 0, yt]
+                [0, 0, 0, zt]
+                [0, 0, 0, 1]
+            ])
+        
+        def scale_matrix(xs, ys, zs):
+            """
+            A função scale_matrix gera a matriz de
+            escala homogênea a partir dos valores de 
+            escala para x, y e z.
+            """
+            return np.array([
+                [xs, 0, 0, 0],
+                [0, ys, 0, 0],
+                [0, 0, zs, 0],
+                [0, 0, 0, 1]
+            ])      
+        
+        def quaternion_rotation_matrix(x: float, y: float, z: float, t: float):
+            """
+            A função quaternion_rotation_matrix usa 
+            eixo da rotação (x, y, z), em conjunto 
+            com o valor em radianos para theta
+            para criar a matriz de rotação.
+            """
+
+            def generate_quaternion(x: float, y: float, z: float, theta: float):
+                """
+                A função generate_quaternion usa o 
+                eixo da rotação (x, y, z) em conjunto
+                com o valor em radianos para theta
+                para criar o quatérnio que irá compor a 
+                matriz de rotação.
+
+                um quatérnio [qi, qj, qk, qr] é, na
+                prática, o vetor [
+                    ux*sin(theta/2),
+                    uy*sin(theta/2),
+                    uz*sin(theta/2),
+                    cos(theta/2)
+                ]
+
+                sendo ux, uy e uz os versores do eixo
+                (vetor [x, y, z] divido pela norma). 
+                """
+                vector = np.array([x, y, z])
+                norm = np.linalg.norm(vector)
+
+                # se a norma do vetor é zero, não
+                # há rotação, e o se usa o quatérnio 1,
+                # equivalente a identidade.
+                if norm == 0:
+                    return (0, 0, 0, 1)
+                
+                normalized_vector = vector / norm
+                ux, uy, uz = normalized_vector
+
+                return (
+                    ux * math.sin(t/2),
+                    uy * math.sin(t/2),
+                    uz * math.sin(t/2),
+                    math.cos(t/2)
+                )
+            
+            qi, qj, qk, qr = generate_quaternion(x, y, z, t)
+            
+            return np.array([
+                [1 - 2*(qj**2 + qk**2), 2*(qi*qj - qk*qr), 2*(qi*qk + qj*qr), 0],
+                [2*(qi*qj + qk*qr), 1 - 2*(qi**2 + qk**2), 2*(qj*qk - qi*qr), 0],
+                [2*(qi*qk - qj*qr), 2*(qj*qk + qi*qr), 1 - 2*(qi**2 + qj**2), 0],
+                [0, 0, 0, 1]
+            ])
+        
+        t_matrix = translation_matrix(translation[0], translation[1], translation[2])
+        r_matrix = quaternion_rotation_matrix(rotation[0], rotation[1], rotation[2], rotation[3])
+        s_matrix = scale_matrix(scale[0], scale[1], scale[2])
+
+        transformation_matrix = t_matrix @ r_matrix @ s_matrix
+
+        # Finalmente, após obter a matriz combinada de transformação,
+        #
+        if len(GL.stack) > 0:
+            GL.pushmatrix(transformation_matrix @ GL.stack[-1])
+        else:
+            GL.pushmatrix(transformation_matrix)
 
     @staticmethod
     def transform_out():
@@ -273,8 +365,7 @@ class GL:
         # deverá recuperar a matriz de transformação dos modelos do mundo da estrutura de
         # pilha implementada.
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Saindo de Transform")
+        GL.popmatrix()
 
     @staticmethod
     def triangleStripSet(point, stripCount, colors):
