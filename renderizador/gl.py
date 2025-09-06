@@ -24,13 +24,144 @@ class GL:
     near = 0.01   # plano de corte próximo
     far = 1000    # plano de corte distante
 
-    stack = []
+    TRANSFORMATION_STACK = []
+    view_matrix = None
 
+    @staticmethod
+    def order_winding(points):
+        """
+        A função order_winding ordena os vértices do triângulo
+        no sentido anti-horário (winding order).
+
+        Isso é feito calculando o centróide (média das coordenadas
+        dos vértices) e obtendo o ângulo de cada vértice em relação
+        a esse centróide. Esses ângulos são usados para ordenar os 
+        vértices de forma decrescente, pois, diferentemente do círculo
+        trigonométrico convencional (com eixo y para cima), no sistema
+        de coordenadas de píxeis o eixo y cresce para baixo, o que 
+        inverte o sentido do círculo trigonométrico.
+        """
+
+        cx = sum(p[0] for p in points) / len(points)
+        cy = sum(p[1] for p in points) / len(points)
+        
+        ordered = sorted(points, key=(lambda p: math.atan2(p[1] - cy, p[0] - cx)), reverse=True)
+
+        return ordered
+
+    @staticmethod
+    def is_inside(points, p, color):
+        """
+        A função is_inside analisa se o ponto está em cada um dos semiplanos das arestas do triângulo,
+        e desenha o pixel caso este seja o caso.
+        """
+        def L(p1, p2, p):
+            """
+            A função L retorna se o ponto p -> (x, y) está no semiplano de uma das arestas do triângulo,
+            usando a função:
+            L(x, y) = (y1 - y0)x - (x1 - x0)y + y0(x1 - x0) - x0(y1 - y0)
+            e retornando um valor booleano caso o resultado da função seja maior ou igual a zero,
+            dado o fato que usamos o sistema de coordenadas de pixels, onde o eixo y é orientado
+            para baixo, ao invés de para cima.
+            """
+            result = (p2[1] - p1[1]) * p[0] - (p2[0] - p1[0]) * p[1] + p1[1] * (p2[0] - p1[0]) - p1[0] * (p2[1] - p1[1])
+            return result >= 0
+
+        v1, v2, v3 = L(points[0], points[1], p), L(points[1], points[2], p), L(points[2], points[0], p)
+        if v1 and v2 and v3:
+            gpu.GPU.draw_pixel([p[0], p[1]], gpu.GPU.RGB8, color)
+
+    @staticmethod
     def pushmatrix(m):
-       GL.stack.append(m)
+       GL.TRANSFORMATION_STACK.append(m)
 
+    @staticmethod
     def popmatrix():
-        return GL.stack.pop(-1)
+        return GL.TRANSFORMATION_STACK.pop(-1)
+    
+    @staticmethod
+    def translation_matrix(xt, yt, zt):
+        """
+        A função translation_matrix gera a matriz
+        de translação homogênea a partir dos valores
+        de translação para x, y e z. 
+        """
+        return np.array([
+            [1, 0, 0, xt],
+            [0, 1, 0, yt],
+            [0, 0, 1, zt],
+            [0, 0, 0, 1]
+        ])
+    
+    @staticmethod
+    def scale_matrix(xs, ys, zs):
+        """
+        A função scale_matrix gera a matriz de
+        escala homogênea a partir dos valores de 
+        escala para x, y e z.
+        """
+        return np.array([
+            [xs, 0, 0, 0],
+            [0, ys, 0, 0],
+            [0, 0, zs, 0],
+            [0, 0, 0, 1]
+        ])      
+    
+    @staticmethod
+    def quaternion_rotation_matrix(x: float, y: float, z: float, t: float):
+        """
+        A função quaternion_rotation_matrix usa 
+        eixo da rotação (x, y, z), em conjunto 
+        com o valor em radianos para theta
+        para criar a matriz de rotação.
+        """
+
+        def generate_quaternion(x: float, y: float, z: float, theta: float):
+            """
+            A função generate_quaternion usa o 
+            eixo da rotação (x, y, z) em conjunto
+            com o valor em radianos para theta
+            para criar o quatérnio que irá compor a 
+            matriz de rotação.
+
+            um quatérnio [qi, qj, qk, qr] é, na
+            prática, o vetor [
+                ux*sin(theta/2),
+                uy*sin(theta/2),
+                uz*sin(theta/2),
+                cos(theta/2)
+            ]
+
+            sendo ux, uy e uz os versores do eixo
+            (vetor [x, y, z] divido pela norma). 
+            """
+            vector = np.array([x, y, z])
+            norm = np.linalg.norm(vector)
+
+            # se a norma do vetor é zero, não
+            # há rotação, e o se usa o quatérnio 1,
+            # equivalente a identidade.
+            if norm == 0:
+                return (0, 0, 0, 1)
+            
+            normalized_vector = vector / norm
+            ux, uy, uz = normalized_vector
+
+            return (
+                ux * math.sin(theta/2),
+                uy * math.sin(theta/2),
+                uz * math.sin(theta/2),
+                math.cos(theta/2)
+            )
+        
+        qi, qj, qk, qr = generate_quaternion(x, y, z, t)
+        
+        return np.array([
+            [1 - 2*(qj**2 + qk**2), 2*(qi*qj - qk*qr), 2*(qi*qk + qj*qr), 0],
+            [2*(qi*qj + qk*qr), 1 - 2*(qi**2 + qk**2), 2*(qj*qk - qi*qr), 0],
+            [2*(qi*qk - qj*qr), 2*(qj*qk + qi*qr), 1 - 2*(qi**2 + qj**2), 0],
+            [0, 0, 0, 1]
+        ])
 
     @staticmethod
     def setup(width, height, near=0.01, far=1000):
@@ -51,8 +182,6 @@ class GL:
         # pelo tamanho da lista e assuma que sempre vira uma quantidade par de valores.
         # O parâmetro colors é um dicionário com os tipos cores possíveis, para o Polypoint2D
         # você pode assumir inicialmente o desenho dos pontos com a cor emissiva (emissiveColor).
-
-        print(point)
 
         # Itera de dois em dois valores pelos pontos
         for i in range(0, len(point), 2):
@@ -159,59 +288,20 @@ class GL:
         # O parâmetro colors é um dicionário com os tipos cores possíveis, para o TriangleSet2D
         # você pode assumir inicialmente o desenho das linhas com a cor emissiva (emissiveColor).
         COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
-        
-        def is_inside(points, p):
-            """
-            A função is_inside analisa se o ponto está em cada um dos semiplanos das arestas do triângulo,
-            e desenha o pixel caso este seja o caso.
-            """
-            def L(p1, p2, p):
-                """
-                A função L retorna se o ponto p -> (x, y) está no semiplano de uma das arestas do triângulo,
-                usando a função:
-                L(x, y) = (y1 - y0)x - (x1 - x0)y + y0(x1 - x0) - x0(y1 - y0)
-                e retornando um valor booleano caso o resultado da função seja maior ou igual a zero,
-                dado o fato que usamos o sistema de coordenadas de pixels, onde o eixo y é orientado
-                para baixo, ao invés de para cima.
-                """
-                result = (p2[1] - p1[1]) * p[0] - (p2[0] - p1[0]) * p[1] + p1[1] * (p2[0] - p1[0]) - p1[0] * (p2[1] - p1[1])
-                return result >= 0
-
-            v1, v2, v3 = L(points[0], points[1], p), L(points[1], points[2], p), L(points[2], points[0], p)
-            if v1 and v2 and v3:
-                gpu.GPU.draw_pixel([p[0], p[1]], gpu.GPU.RGB8, COLOR)
-        
-        def order_winding(points):
-            """
-            A função order_winding ordena os vértices do triângulo
-            no sentido anti-horário (winding order).
-
-            Isso é feito calculando o centróide (média das coordenadas
-            dos vértices) e obtendo o ângulo de cada vértice em relação
-            a esse centróide. Esses ângulos são usados para ordenar os 
-            vértices de forma decrescente, pois, diferentemente do círculo
-            trigonométrico convencional (com eixo y para cima), no sistema
-            de coordenadas de píxeis o eixo y cresce para baixo, o que 
-            inverte o sentido do círculo trigonométrico.
-            """
-
-            cx = sum(p[0] for p in points) / len(points)
-            cy = sum(p[1] for p in points) / len(points)
-            
-            ordered = sorted(points, key=(lambda p: math.atan2(p[1] - cy, p[0] - cx)), reverse=True)
-
-            return ordered
 
         for i in range(0, len(vertices), 6):
             p1 = (vertices[i], vertices[i+1])
             p2 = (vertices[i+2], vertices[i+3])
             p3 = (vertices[i+4], vertices[i+5])
 
-            winding_ordered_points = order_winding([p1, p2, p3])
+            winding_ordered_points = GL.order_winding([p1, p2, p3])
 
-            for y in range(GL.height):
-                for x in range(GL.width):
-                    is_inside(winding_ordered_points, (x, y))
+            min_x, max_x = min([p1[0], p2[0], p3[0]]), max([p1[0], p2[0], p3[0]])
+            min_y, max_y = min([p1[1], p2[1], p3[1]]), max([p1[1], p2[1], p3[1]])
+
+            for y in range(min_y, max_y):
+                for x in range(min_x, max_x):
+                    GL.is_inside(winding_ordered_points, (x, y), COLOR)
 
     @staticmethod
     def triangleSet(point, colors):
@@ -229,13 +319,39 @@ class GL:
         # inicialmente, para o TriangleSet, o desenho das linhas com a cor emissiva
         # (emissiveColor), conforme implementar novos materias você deverá suportar outros
         # tipos de cores.
+        COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("TriangleSet : pontos = {0}".format(point)) # imprime no terminal pontos
-        print("TriangleSet : colors = {0}".format(colors)) # imprime no terminal as cores
+        for i in range(0, len(point), 9):
+            p1 = (point[i], point[i+1], point[i+2], 1)
+            p2 = (point[i+3], point[i+4], point[i+5], 1)
+            p3 = (point[i+5], point[i+6], point[i+7], 1)
 
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+            triangle = np.array([
+                p1, p2, p3
+            ]).T
+
+            t_matrix = GL.view_matrix @ GL.TRANSFORMATION_STACK[-1]
+
+            triangle = t_matrix @ triangle
+
+            triangle[0, :] = triangle[0, :] / triangle[3, :]
+            triangle[1, :] = triangle[1, :] / triangle[3, :]
+            triangle[2, :] = triangle[2, :] / triangle[3, :]
+
+            p1 = (triangle[0][0], triangle[1][0])
+            p2 = (triangle[0][0], triangle[1][0])
+            p3 = (triangle[0][0], triangle[1][0])
+
+            winding_ordered_points = GL.order_winding([p1, p2, p3])
+
+            min_x, max_x = int(min([p1[0], p2[0], p3[0]])), int(max([p1[0], p2[0], p3[0]]))
+            min_y, max_y = int(min([p1[1], p2[1], p3[1]])), int(max([p1[1], p2[1], p3[1]]))
+
+            for y in range(min_y, max_y):
+                for x in range(min_x, max_x):
+                    if 0 <= x < GL.width and 0 <= y < GL.height:
+                        GL.is_inside(winding_ordered_points, (x, y), COLOR)
+            
 
     @staticmethod
     def viewpoint(position, orientation, fieldOfView):
@@ -250,6 +366,52 @@ class GL:
         print("orientation = {0} ".format(orientation), end='')
         print("fieldOfView = {0} ".format(fieldOfView)) 
 
+        rotation_matrix = GL.quaternion_rotation_matrix(
+            orientation[0], 
+            orientation[1], 
+            orientation[2], 
+            orientation[3]
+        )
+        rotation_matrix = rotation_matrix[:3, :3]
+
+        base_forward = np.array([0, 0, -1])
+        base_up = np.array([0, 1, 0])
+
+        camera_forward = rotation_matrix @ base_forward
+
+        camera_up = rotation_matrix @ base_up
+        eye = np.array(position)
+        at = eye + camera_forward
+
+        def look_at_matrix(up, at, eye):
+            w = at - eye
+            w = w / float(np.linalg.norm(w))
+
+            u = np.linalg.cross(w, up)
+            u = u / float(np.linalg.norm(u))
+
+            v = np.linalg.cross(u, w)
+            v = v / float(np.linalg.norm(v))
+
+            R = np.array([
+                [u[0], v[0], -w[0], 0],
+                [u[1], v[1], -w[1], 0],
+                [u[2], v[2], -w[2], 0],
+                [0, 0, 0, 1]
+            ]).T
+
+            E = np.array([
+                [1, 0, 0, -eye[0]],
+                [0, 1, 0, -eye[1]],
+                [0, 0, 1, -eye[2]],
+                [0, 0, 0, 1]
+            ])
+
+            return R @ E
+        
+        view_matrix = look_at_matrix(up=camera_up, at=at, eye=eye)
+        GL.view_matrix = view_matrix
+
     @staticmethod
     def transform_in(translation, scale, rotation):
         """Função usada para renderizar (na verdade coletar os dados) de Transform."""
@@ -262,98 +424,18 @@ class GL:
         # modelos do mundo para depois potencialmente usar em outras chamadas. 
         # Quando começar a usar Transforms dentre de outros Transforms, mais a frente no curso
         # Você precisará usar alguma estrutura de dados pilha para organizar as matrizes.
-
-        def translation_matrix(xt, yt, zt):
-            """
-            A função translation_matrix gera a matriz
-            de translação homogênea a partir dos valores
-            de translação para x, y e z. 
-            """
-            return np.array([
-                [0, 0, 0, xt],
-                [0, 0, 0, yt]
-                [0, 0, 0, zt]
-                [0, 0, 0, 1]
-            ])
         
-        def scale_matrix(xs, ys, zs):
-            """
-            A função scale_matrix gera a matriz de
-            escala homogênea a partir dos valores de 
-            escala para x, y e z.
-            """
-            return np.array([
-                [xs, 0, 0, 0],
-                [0, ys, 0, 0],
-                [0, 0, zs, 0],
-                [0, 0, 0, 1]
-            ])      
-        
-        def quaternion_rotation_matrix(x: float, y: float, z: float, t: float):
-            """
-            A função quaternion_rotation_matrix usa 
-            eixo da rotação (x, y, z), em conjunto 
-            com o valor em radianos para theta
-            para criar a matriz de rotação.
-            """
-
-            def generate_quaternion(x: float, y: float, z: float, theta: float):
-                """
-                A função generate_quaternion usa o 
-                eixo da rotação (x, y, z) em conjunto
-                com o valor em radianos para theta
-                para criar o quatérnio que irá compor a 
-                matriz de rotação.
-
-                um quatérnio [qi, qj, qk, qr] é, na
-                prática, o vetor [
-                    ux*sin(theta/2),
-                    uy*sin(theta/2),
-                    uz*sin(theta/2),
-                    cos(theta/2)
-                ]
-
-                sendo ux, uy e uz os versores do eixo
-                (vetor [x, y, z] divido pela norma). 
-                """
-                vector = np.array([x, y, z])
-                norm = np.linalg.norm(vector)
-
-                # se a norma do vetor é zero, não
-                # há rotação, e o se usa o quatérnio 1,
-                # equivalente a identidade.
-                if norm == 0:
-                    return (0, 0, 0, 1)
-                
-                normalized_vector = vector / norm
-                ux, uy, uz = normalized_vector
-
-                return (
-                    ux * math.sin(t/2),
-                    uy * math.sin(t/2),
-                    uz * math.sin(t/2),
-                    math.cos(t/2)
-                )
-            
-            qi, qj, qk, qr = generate_quaternion(x, y, z, t)
-            
-            return np.array([
-                [1 - 2*(qj**2 + qk**2), 2*(qi*qj - qk*qr), 2*(qi*qk + qj*qr), 0],
-                [2*(qi*qj + qk*qr), 1 - 2*(qi**2 + qk**2), 2*(qj*qk - qi*qr), 0],
-                [2*(qi*qk - qj*qr), 2*(qj*qk + qi*qr), 1 - 2*(qi**2 + qj**2), 0],
-                [0, 0, 0, 1]
-            ])
-        
-        t_matrix = translation_matrix(translation[0], translation[1], translation[2])
-        r_matrix = quaternion_rotation_matrix(rotation[0], rotation[1], rotation[2], rotation[3])
-        s_matrix = scale_matrix(scale[0], scale[1], scale[2])
+        t_matrix = GL.translation_matrix(translation[0], translation[1], translation[2])
+        r_matrix = GL.quaternion_rotation_matrix(rotation[0], rotation[1], rotation[2], rotation[3])
+        s_matrix = GL.scale_matrix(scale[0], scale[1], scale[2])
 
         transformation_matrix = t_matrix @ r_matrix @ s_matrix
 
         # Finalmente, após obter a matriz combinada de transformação,
-        #
-        if len(GL.stack) > 0:
-            GL.pushmatrix(transformation_matrix @ GL.stack[-1])
+        # empilhamos pra manter a hierarquia de transformações
+        if len(GL.TRANSFORMATION_STACK) > 0:
+            last_matrix = GL.popmatrix()
+            GL.pushmatrix(transformation_matrix @ last_matrix)
         else:
             GL.pushmatrix(transformation_matrix)
 
