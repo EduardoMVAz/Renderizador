@@ -185,7 +185,6 @@ class GL:
 
         # Itera de dois em dois valores pelos pontos
         for i in range(0, len(point), 2):
-            print(i, len(point))
             # Formata os valores de x e y para o formato da função draw_pixel
             cur_point = [int(point[i]), int(point[i+1])]
 
@@ -359,12 +358,6 @@ class GL:
         # Na função de viewpoint você receberá a posição, orientação e campo de visão da
         # câmera virtual. Use esses dados para poder calcular e criar a matriz de projeção
         # perspectiva para poder aplicar nos pontos dos objetos geométricos.
-
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Viewpoint : ", end='')
-        print("position = {0} ".format(position), end='')
-        print("orientation = {0} ".format(orientation), end='')
-        print("fieldOfView = {0} ".format(fieldOfView)) 
 
         rotation_matrix = GL.quaternion_rotation_matrix(
             orientation[0], 
