@@ -26,6 +26,9 @@ class GL:
 
     TRANSFORMATION_STACK = []
     view_matrix = None
+    vision_perspective = None
+    perspective_matrix = None
+    screen_matrix = None
 
     @staticmethod
     def order_winding(points):
@@ -162,6 +165,71 @@ class GL:
             [2*(qi*qk - qj*qr), 2*(qj*qk + qi*qr), 1 - 2*(qi**2 + qj**2), 0],
             [0, 0, 0, 1]
         ])
+    
+    def look_at_matrix(up, at, eye):
+        """
+        A função look_at_matrix utiliza as informações
+        de posição e orientação da câmera para criar 
+        a matriz de look_at, que transfomra as coordenadas
+        do mundo para o espaço da câmera, permitindo a
+        manipulação de objetos a partir da perspectiva da
+        câmera.
+        """
+        w = at - eye
+        w = w / float(np.linalg.norm(w))
+
+        u = np.linalg.cross(w, up)
+        u = u / float(np.linalg.norm(u))
+
+        v = np.linalg.cross(u, w)
+        v = v / float(np.linalg.norm(v))
+
+        R = np.array([
+            [u[0], v[0], -w[0], 0],
+            [u[1], v[1], -w[1], 0],
+            [u[2], v[2], -w[2], 0],
+            [0, 0, 0, 1]
+        ]).T
+
+        E = np.array([
+            [1, 0, 0, -eye[0]],
+            [0, 1, 0, -eye[1]],
+            [0, 0, 1, -eye[2]],
+            [0, 0, 0, 1]
+        ])
+
+        return R @ E
+    
+    def perspective_projection_matrix(far, near, right, top):
+        """
+        A função perspective_projection_matrix cria
+        a matriz de projeção, ou perspectiva, que projeta
+        o espaço 3D em 2D, mantendo a perspectiva correta 
+        esperada, ao invés de simplesmente planificar os objetos,
+        como uma sombra faria, por exemplo.
+        """
+        return np.array([
+            [near/right, 0, 0, 0],
+            [0, near/top, 0, 0],
+            [0, 0, -((far+near)/(far-near)), -(2*far*near)/(far-near)],
+            [0, 0, -1, 0]
+        ])
+    
+    def screen_transformation_matrix(W,H):
+        """
+        A função screen_transfomation_matrix  
+        cria a matriz de transformação para a tela,
+        responsável por mapear os pontos no espaço de 
+        coordenadas normalizado da câmera para o espaço 
+        de coordenada de pixels.
+        """
+        return np.array([
+            [W/2, 0, 0, W/2],
+            [0, -H/2, 0, H/2],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ])
+    
 
     @staticmethod
     def setup(width, height, near=0.01, far=1000):
@@ -295,11 +363,8 @@ class GL:
 
             winding_ordered_points = GL.order_winding([p1, p2, p3])
 
-            min_x, max_x = min([p1[0], p2[0], p3[0]]), max([p1[0], p2[0], p3[0]])
-            min_y, max_y = min([p1[1], p2[1], p3[1]]), max([p1[1], p2[1], p3[1]])
-
-            for y in range(min_y, max_y):
-                for x in range(min_x, max_x):
+            for y in range(GL.height):
+                for x in range(GL.width):   
                     GL.is_inside(winding_ordered_points, (x, y), COLOR)
 
     @staticmethod
@@ -321,31 +386,39 @@ class GL:
         COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
 
         for i in range(0, len(point), 9):
-            p1 = (point[i], point[i+1], point[i+2], 1)
-            p2 = (point[i+3], point[i+4], point[i+5], 1)
-            p3 = (point[i+5], point[i+6], point[i+7], 1)
-
             triangle = np.array([
-                p1, p2, p3
+                [point[i], point[i+1], point[i+2], 1],  
+                [point[i+3], point[i+4], point[i+5], 1],  
+                [point[i+6], point[i+7], point[i+8], 1]
             ]).T
 
-            t_matrix = GL.view_matrix @ GL.TRANSFORMATION_STACK[-1]
+            # Aplica-se as matrizes de world, view e perspective, todas homogêneas
+            t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.TRANSFORMATION_STACK[-1]
 
             triangle = t_matrix @ triangle
 
+            # Como agora temos termos diferente de zero no quarto componente, é
+            # necessário fazer a Divisão Homogênea para normalizar esse componente
+            # novamente.
             triangle[0, :] = triangle[0, :] / triangle[3, :]
             triangle[1, :] = triangle[1, :] / triangle[3, :]
             triangle[2, :] = triangle[2, :] / triangle[3, :]
+            triangle[3, :] = triangle[3, :] / triangle[3, :]
 
+            # Aplicamos a matriz de transformação para a tela, após o Homogeneous Divide
+            triangle = GL.screen_transformation_matrix(GL.width, GL.height) @ triangle
+
+            # Extraimos os vértices do triângulo em 2D e ordenamos para
+            # realizar a checagem se os pontos estão dentro do plano do triângulo
             p1 = (triangle[0][0], triangle[1][0])
-            p2 = (triangle[0][0], triangle[1][0])
-            p3 = (triangle[0][0], triangle[1][0])
-
+            p2 = (triangle[0][1], triangle[1][1])
+            p3 = (triangle[0][2], triangle[1][2])
             winding_ordered_points = GL.order_winding([p1, p2, p3])
 
             min_x, max_x = int(min([p1[0], p2[0], p3[0]])), int(max([p1[0], p2[0], p3[0]]))
             min_y, max_y = int(min([p1[1], p2[1], p3[1]])), int(max([p1[1], p2[1], p3[1]]))
 
+            # E finalmente, desenhamos o triângulo
             for y in range(min_y, max_y):
                 for x in range(min_x, max_x):
                     if 0 <= x < GL.width and 0 <= y < GL.height:
@@ -359,6 +432,11 @@ class GL:
         # câmera virtual. Use esses dados para poder calcular e criar a matriz de projeção
         # perspectiva para poder aplicar nos pontos dos objetos geométricos.
 
+        # O primeiro passo para criar a matriz view é criar uma 
+        # matriz de rotação com base na orientação da câmera.
+        # Isso permite obter as direções up e forward para a 
+        # orientação da câmera, a partir dos versores dos
+        # eixos y e z (negativo)
         rotation_matrix = GL.quaternion_rotation_matrix(
             orientation[0], 
             orientation[1], 
@@ -373,37 +451,34 @@ class GL:
         camera_forward = rotation_matrix @ base_forward
 
         camera_up = rotation_matrix @ base_up
+
+        # O valor de eye é a posição da câmera no espaço,
+        # enquanto o valor de at é a posição do objeto para o qual
+        # a câmera está apontando em relação à posição da câmera
         eye = np.array(position)
         at = eye + camera_forward
-
-        def look_at_matrix(up, at, eye):
-            w = at - eye
-            w = w / float(np.linalg.norm(w))
-
-            u = np.linalg.cross(w, up)
-            u = u / float(np.linalg.norm(u))
-
-            v = np.linalg.cross(u, w)
-            v = v / float(np.linalg.norm(v))
-
-            R = np.array([
-                [u[0], v[0], -w[0], 0],
-                [u[1], v[1], -w[1], 0],
-                [u[2], v[2], -w[2], 0],
-                [0, 0, 0, 1]
-            ]).T
-
-            E = np.array([
-                [1, 0, 0, -eye[0]],
-                [0, 1, 0, -eye[1]],
-                [0, 0, 1, -eye[2]],
-                [0, 0, 0, 1]
-            ])
-
-            return R @ E
-        
-        view_matrix = look_at_matrix(up=camera_up, at=at, eye=eye)
+    
+        # Com essas informações e a informação do fov podemos
+        # construir duas matrizes: A matriz de look at e a 
+        # matriz de perspectiva.
+        view_matrix = GL.look_at_matrix(up=camera_up, at=at, eye=eye)
         GL.view_matrix = view_matrix
+
+        # A matriz de perspectiva projeta os pontos 3D em 2D,
+        # permitindo representar a perspectiva direta de profundidade
+        # no nosso plano da tela.
+        top = GL.near * np.tan(fieldOfView/2)
+        bottom = -top
+        right = top * GL.width / GL.height
+        left = -right
+
+        GL.vision_perspective = [
+            top,
+            bottom,
+            right,
+            left
+        ]
+        GL.perspective_matrix = GL.perspective_projection_matrix(GL.far, GL.near, right, top)
 
     @staticmethod
     def transform_in(translation, scale, rotation):
