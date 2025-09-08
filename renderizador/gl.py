@@ -24,12 +24,6 @@ class GL:
     near = 0.01   # plano de corte próximo
     far = 1000    # plano de corte distante
 
-    TRANSFORMATION_STACK = []
-    view_matrix = None
-    vision_perspective = None
-    perspective_matrix = None
-    screen_matrix = None
-
     @staticmethod
     def order_winding(points):
         """
@@ -76,11 +70,11 @@ class GL:
 
     @staticmethod
     def pushmatrix(m):
-       GL.TRANSFORMATION_STACK.append(m)
+       GL.transformation_stack.append(m)
 
     @staticmethod
     def popmatrix():
-        return GL.TRANSFORMATION_STACK.pop(-1)
+        return GL.transformation_stack.pop()
     
     @staticmethod
     def translation_matrix(xt, yt, zt):
@@ -239,6 +233,12 @@ class GL:
         GL.near = near
         GL.far = far
 
+        GL.transformation_stack = [np.identity(4)]
+        GL.view_matrix = np.identity(4)
+        GL.vision_perspective = []
+        GL.perspective_matrix = np.identity(4)
+        GL.screen_matrix = np.identity(4)
+
     @staticmethod
     def polypoint2D(point, colors):
         """Função usada para renderizar Polypoint2D."""
@@ -393,7 +393,7 @@ class GL:
             ]).T
 
             # Aplica-se as matrizes de world, view e perspective, todas homogêneas
-            t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.TRANSFORMATION_STACK[-1]
+            t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.transformation_stack[-1]
 
             triangle = t_matrix @ triangle
 
@@ -415,8 +415,8 @@ class GL:
             p3 = (triangle[0][2], triangle[1][2])
             winding_ordered_points = GL.order_winding([p1, p2, p3])
 
-            min_x, max_x = int(min([p1[0], p2[0], p3[0]])), int(max([p1[0], p2[0], p3[0]]))
-            min_y, max_y = int(min([p1[1], p2[1], p3[1]])), int(max([p1[1], p2[1], p3[1]]))
+            min_x, max_x = int(min([p1[0], p2[0], p3[0]]) - 1), int(max([p1[0], p2[0], p3[0]]) + 1)
+            min_y, max_y = int(min([p1[1], p2[1], p3[1]]) - 1), int(max([p1[1], p2[1], p3[1]]) + 1)
 
             # E finalmente, desenhamos o triângulo
             for y in range(min_y, max_y):
@@ -501,11 +501,7 @@ class GL:
 
         # Finalmente, após obter a matriz combinada de transformação,
         # empilhamos pra manter a hierarquia de transformações
-        if len(GL.TRANSFORMATION_STACK) > 0:
-            last_matrix = GL.popmatrix()
-            GL.pushmatrix(transformation_matrix @ last_matrix)
-        else:
-            GL.pushmatrix(transformation_matrix)
+        GL.transformation_stack.append(GL.transformation_stack[-1] @ transformation_matrix)
 
     @staticmethod
     def transform_out():
@@ -514,7 +510,7 @@ class GL:
         # grafo de cena. Não são passados valores, porém quando se sai de um nó transform se
         # deverá recuperar a matriz de transformação dos modelos do mundo da estrutura de
         # pilha implementada.
-
+        print("tirei uma matriz!")
         GL.popmatrix()
 
     @staticmethod
@@ -532,15 +528,50 @@ class GL:
         # depois 2, 3 e 4, e assim por diante. Cuidado com a orientação dos vértices, ou seja,
         # todos no sentido horário ou todos no sentido anti-horário, conforme especificado.
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("TriangleStripSet : pontos = {0} ".format(point), end='')
-        for i, strip in enumerate(stripCount):
-            print("strip[{0}] = {1} ".format(i, strip), end='')
-        print("")
-        print("TriangleStripSet : colors = {0}".format(colors)) # imprime no terminal as cores
+        COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
 
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+        # Única alteração feita sobre o código de triangle set
+        # é que agora nós percorremos de 3 em 3, ao invés de 9
+        # em 9, para reutilizar os vértices que conectam os triângulos
+        # da tira.
+        for i in range(0, len(point)-6, 3):
+            triangle = np.array([
+                [point[i], point[i+1], point[i+2], 1],  
+                [point[i+3], point[i+4], point[i+5], 1],  
+                [point[i+6], point[i+7], point[i+8], 1]
+            ]).T
+
+            # Aplica-se as matrizes de world, view e perspective, todas homogêneas
+            t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.transformation_stack[-1]
+
+            triangle = t_matrix @ triangle
+
+            # Como agora temos termos diferente de zero no quarto componente, é
+            # necessário fazer a Divisão Homogênea para normalizar esse componente
+            # novamente.
+            triangle[0, :] = triangle[0, :] / triangle[3, :]
+            triangle[1, :] = triangle[1, :] / triangle[3, :]
+            triangle[2, :] = triangle[2, :] / triangle[3, :]
+            triangle[3, :] = triangle[3, :] / triangle[3, :]
+
+            # Aplicamos a matriz de transformação para a tela, após o Homogeneous Divide
+            triangle = GL.screen_transformation_matrix(GL.width, GL.height) @ triangle
+
+            # Extraimos os vértices do triângulo em 2D e ordenamos para
+            # realizar a checagem se os pontos estão dentro do plano do triângulo
+            p1 = (triangle[0][0], triangle[1][0])
+            p2 = (triangle[0][1], triangle[1][1])
+            p3 = (triangle[0][2], triangle[1][2])
+            winding_ordered_points = GL.order_winding([p1, p2, p3])
+
+            min_x, max_x = int(min([p1[0], p2[0], p3[0]]) - 1), int(max([p1[0], p2[0], p3[0]]) + 1)
+            min_y, max_y = int(min([p1[1], p2[1], p3[1]]) - 1), int(max([p1[1], p2[1], p3[1]]) + 1)
+
+            # E finalmente, desenhamos o triângulo
+            for y in range(min_y, max_y):
+                for x in range(min_x, max_x):
+                    if 0 <= x < GL.width and 0 <= y < GL.height:
+                        GL.is_inside(winding_ordered_points, (x, y), COLOR)
 
     @staticmethod
     def indexedTriangleStripSet(point, index, colors):
@@ -558,12 +589,54 @@ class GL:
         # depois 2, 3 e 4, e assim por diante. Cuidado com a orientação dos vértices, ou seja,
         # todos no sentido horário ou todos no sentido anti-horário, conforme especificado.
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("IndexedTriangleStripSet : pontos = {0}, index = {1}".format(point, index))
-        print("IndexedTriangleStripSet : colors = {0}".format(colors)) # imprime as cores
+        COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
 
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+        # Para essa implementação, é possível construir uma lista de pontos, 
+        # e portanto, acessar/armazenar cada vértice apenas uma vez, devido
+        # aos ponteiros de cada triângulo aos indíces de seus vértices.
+        vertices = []
+        for i in range(0, len(point), 3):
+            vertices.append((point[i], point[i+1], point[i+2], 1))
+
+        for i in range(len(index)-3):
+            triangle = np.array([
+                vertices[index[i]],
+                vertices[index[i+1]],
+                vertices[index[i+2]]
+            ]).T
+
+            # Aplica-se as matrizes de world, view e perspective, todas homogêneas
+            t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.transformation_stack[-1]
+
+            triangle = t_matrix @ triangle
+
+            # Como agora temos termos diferente de zero no quarto componente, é
+            # necessário fazer a Divisão Homogênea para normalizar esse componente
+            # novamente.
+            triangle[0, :] = triangle[0, :] / triangle[3, :]
+            triangle[1, :] = triangle[1, :] / triangle[3, :]
+            triangle[2, :] = triangle[2, :] / triangle[3, :]
+            triangle[3, :] = triangle[3, :] / triangle[3, :]
+
+            # Aplicamos a matriz de transformação para a tela, após o Homogeneous Divide
+            triangle = GL.screen_transformation_matrix(GL.width, GL.height) @ triangle
+
+            # Extraimos os vértices do triângulo em 2D e ordenamos para
+            # realizar a checagem se os pontos estão dentro do plano do triângulo
+            p1 = (triangle[0][0], triangle[1][0])
+            p2 = (triangle[0][1], triangle[1][1])
+            p3 = (triangle[0][2], triangle[1][2])
+            winding_ordered_points = GL.order_winding([p1, p2, p3])
+
+            min_x, max_x = int(min([p1[0], p2[0], p3[0]]) - 1), int(max([p1[0], p2[0], p3[0]]) + 1)
+            min_y, max_y = int(min([p1[1], p2[1], p3[1]]) - 1), int(max([p1[1], p2[1], p3[1]]) + 1)
+
+            # E finalmente, desenhamos o triângulo
+            for y in range(min_y, max_y):
+                for x in range(min_x, max_x):
+                    if 0 <= x < GL.width and 0 <= y < GL.height:
+                        GL.is_inside(winding_ordered_points, (x, y), COLOR)
+            
 
     @staticmethod
     def indexedFaceSet(coord, coordIndex, colorPerVertex, color, colorIndex,
@@ -590,23 +663,86 @@ class GL:
         # cor da textura conforme a posição do mapeamento. Dentro da classe GPU já está
         # implementadado um método para a leitura de imagens.
 
-        # Os prints abaixo são só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("IndexedFaceSet : ")
-        if coord:
-            print("\tpontos(x, y, z) = {0}, coordIndex = {1}".format(coord, coordIndex))
-        print("colorPerVertex = {0}".format(colorPerVertex))
-        if colorPerVertex and color and colorIndex:
-            print("\tcores(r, g, b) = {0}, colorIndex = {1}".format(color, colorIndex))
-        if texCoord and texCoordIndex:
-            print("\tpontos(u, v) = {0}, texCoordIndex = {1}".format(texCoord, texCoordIndex))
-        if current_texture:
-            image = gpu.GPU.load_texture(current_texture[0])
-            print("\t Matriz com image = {0}".format(image))
-            print("\t Dimensões da image = {0}".format(image.shape))
-        print("IndexedFaceSet : colors = {0}".format(colors))  # imprime no terminal as cores
+        # BUG recebendo colorPerVertex TRUE sem as infos
+        if not colorPerVertex or not color or not colorIndex:
+            colorPerVertex = False
+            COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
 
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+        # Criamos a lista de vértices
+        vertices = []
+        for i in range(0, len(coord), 3):
+            vertices.append((coord[i], coord[i+1], coord[i+2], 1))
+
+        # Para essa implementação, existem 'sets' de triângulos,
+        # onde para cada set como [0, 1, 2, 3, -1] todos os triângulos
+        # compartilham do vértice 0, sendo que o valor -1 sinaliza o fim
+        # de um set, alterando o vértice compartilhado, como em
+        # [0, 1, 2, 3, -1, 5, 6, 7, 8, -1], onde os triângulos seriam
+        # (0, 1, 2), (0, 2, 3), (5, 6, 7) e (5, 6, 8).
+
+        # Para isso, mantenho a referência do vértice origem, e verifico
+        # se em algum momento cheguei ao -1. Caso sim, redefino a origem,
+        # ou finalizo a execução, no caso do fim do vetor de vértices.
+        origin = 0
+        i = 1
+        while i < len(coordIndex) - 2:
+
+            if coordIndex[i] == -1:
+                if i+1 < len(coordIndex):
+                    origin = i+1
+                    i += 2
+                    continue
+
+            if i+1 < len(coordIndex) and coordIndex[i+1] == -1:
+                if i+2 < len(coordIndex):
+                    origin = i+2
+                    i += 3
+                    continue
+
+            triangle = np.array([
+                vertices[coordIndex[origin]],
+                vertices[coordIndex[i]],
+                vertices[coordIndex[i+1]]
+            ]).T
+
+            if colorPerVertex:
+                pass
+            else:
+                vertex_color = COLOR
+
+            # Aplica-se as matrizes de world, view e perspective, todas homogêneas
+            t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.transformation_stack[-1]
+
+            triangle = t_matrix @ triangle
+
+            # Como agora temos termos diferente de zero no quarto componente, é
+            # necessário fazer a Divisão Homogênea para normalizar esse componente
+            # novamente.
+            triangle[0, :] = triangle[0, :] / triangle[3, :]
+            triangle[1, :] = triangle[1, :] / triangle[3, :]
+            triangle[2, :] = triangle[2, :] / triangle[3, :]
+            triangle[3, :] = triangle[3, :] / triangle[3, :]
+
+            # Aplicamos a matriz de transformação para a tela, após o Homogeneous Divide
+            triangle = GL.screen_transformation_matrix(GL.width, GL.height) @ triangle
+
+            # Extraimos os vértices do triângulo em 2D e ordenamos para
+            # realizar a checagem se os pontos estão dentro do plano do triângulo
+            p1 = (triangle[0][0], triangle[1][0])
+            p2 = (triangle[0][1], triangle[1][1])
+            p3 = (triangle[0][2], triangle[1][2])
+            winding_ordered_points = GL.order_winding([p1, p2, p3])
+
+            min_x, max_x = int(min([p1[0], p2[0], p3[0]]) - 1), int(max([p1[0], p2[0], p3[0]]) + 1)
+            min_y, max_y = int(min([p1[1], p2[1], p3[1]]) - 1), int(max([p1[1], p2[1], p3[1]]) + 1)
+
+            # E finalmente, desenhamos o triângulo
+            for y in range(min_y, max_y):
+                for x in range(min_x, max_x):
+                    if 0 <= x < GL.width and 0 <= y < GL.height:
+                        GL.is_inside(winding_ordered_points, (x, y), vertex_color)
+
+            i += 1
 
     @staticmethod
     def box(size, colors):
