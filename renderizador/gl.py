@@ -47,7 +47,7 @@ class GL:
         return ordered
 
     @staticmethod
-    def is_inside(points, p, color):
+    def is_inside(points, p):
         """
         A função is_inside analisa se o ponto está em cada um dos semiplanos das arestas do triângulo,
         e desenha o pixel caso este seja o caso.
@@ -66,7 +66,7 @@ class GL:
 
         v1, v2, v3 = L(points[0], points[1], p), L(points[1], points[2], p), L(points[2], points[0], p)
         if v1 and v2 and v3:
-            gpu.GPU.draw_pixel([p[0], p[1]], gpu.GPU.RGB8, color)
+            return True
 
     @staticmethod
     def pushmatrix(m):
@@ -160,6 +160,7 @@ class GL:
             [0, 0, 0, 1]
         ])
     
+    @staticmethod
     def look_at_matrix(up, at, eye):
         """
         A função look_at_matrix utiliza as informações
@@ -194,6 +195,7 @@ class GL:
 
         return R @ E
     
+    @staticmethod
     def perspective_projection_matrix(far, near, right, top):
         """
         A função perspective_projection_matrix cria
@@ -209,6 +211,7 @@ class GL:
             [0, 0, -1, 0]
         ])
     
+    @staticmethod
     def screen_transformation_matrix(W,H):
         """
         A função screen_transfomation_matrix  
@@ -224,6 +227,17 @@ class GL:
             [0, 0, 0, 1]
         ])
     
+    @staticmethod
+    def calculate_baricentric_coordinates(A, B, C, point):
+        alpha = ((-(point[0] - B[0]) * (C[1] - B[1]) + (point[1] - B[1]) * (C[0] - B[0])) /
+                (-(A[0] - B[0]) * (C[1] - B[1]) + (A[1] - B[1]) * (C[0] - B[0])))
+        
+        beta = ((-(point[0] - C[0]) * (A[1] - C[1]) + (point[1] - C[1]) * (A[0] - C[0])) /
+                (-(B[0] - C[0]) * (A[1] - C[1]) + (B[1] - C[1]) * (A[0] - C[0])))
+        
+        gamma = 1 - alpha - beta 
+
+        return round(alpha, 3), round(beta, 3), round(gamma, 3)
 
     @staticmethod
     def setup(width, height, near=0.01, far=1000):
@@ -363,9 +377,13 @@ class GL:
 
             winding_ordered_points = GL.order_winding([p1, p2, p3])
 
-            for y in range(GL.height):
-                for x in range(GL.width):   
-                    GL.is_inside(winding_ordered_points, (x, y), COLOR)
+            min_x, max_x = int(min([p1[0], p2[0], p3[0]]) - 1), int(max([p1[0], p2[0], p3[0]]) + 1)
+            min_y, max_y = int(min([p1[1], p2[1], p3[1]]) - 1), int(max([p1[1], p2[1], p3[1]]) + 1)
+
+            for y in range(min_y, max_y):
+                for x in range(min_x, max_x):
+                    if 0 <= x < GL.width and 0 <= y < GL.height and GL.is_inside(winding_ordered_points, (x, y)):
+                        gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, COLOR)
 
     @staticmethod
     def triangleSet(point, colors):
@@ -421,8 +439,8 @@ class GL:
             # E finalmente, desenhamos o triângulo
             for y in range(min_y, max_y):
                 for x in range(min_x, max_x):
-                    if 0 <= x < GL.width and 0 <= y < GL.height:
-                        GL.is_inside(winding_ordered_points, (x, y), COLOR)
+                    if 0 <= x < GL.width and 0 <= y < GL.height and GL.is_inside(winding_ordered_points, (x, y)):
+                        gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, COLOR)
             
 
     @staticmethod
@@ -510,7 +528,6 @@ class GL:
         # grafo de cena. Não são passados valores, porém quando se sai de um nó transform se
         # deverá recuperar a matriz de transformação dos modelos do mundo da estrutura de
         # pilha implementada.
-        print("tirei uma matriz!")
         GL.popmatrix()
 
     @staticmethod
@@ -570,8 +587,8 @@ class GL:
             # E finalmente, desenhamos o triângulo
             for y in range(min_y, max_y):
                 for x in range(min_x, max_x):
-                    if 0 <= x < GL.width and 0 <= y < GL.height:
-                        GL.is_inside(winding_ordered_points, (x, y), COLOR)
+                    if 0 <= x < GL.width and 0 <= y < GL.height and GL.is_inside(winding_ordered_points, (x, y)):
+                        gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, COLOR)
 
     @staticmethod
     def indexedTriangleStripSet(point, index, colors):
@@ -634,8 +651,8 @@ class GL:
             # E finalmente, desenhamos o triângulo
             for y in range(min_y, max_y):
                 for x in range(min_x, max_x):
-                    if 0 <= x < GL.width and 0 <= y < GL.height:
-                        GL.is_inside(winding_ordered_points, (x, y), COLOR)
+                    if 0 <= x < GL.width and 0 <= y < GL.height and GL.is_inside(winding_ordered_points, (x, y)):
+                        gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, COLOR)
             
 
     @staticmethod
@@ -663,7 +680,6 @@ class GL:
         # cor da textura conforme a posição do mapeamento. Dentro da classe GPU já está
         # implementadado um método para a leitura de imagens.
 
-        # BUG recebendo colorPerVertex TRUE sem as infos
         if not colorPerVertex or not color or not colorIndex:
             colorPerVertex = False
             COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
@@ -672,6 +688,12 @@ class GL:
         vertices = []
         for i in range(0, len(coord), 3):
             vertices.append((coord[i], coord[i+1], coord[i+2], 1))
+        
+        colors = None
+        if colorPerVertex:
+            colors = []
+            for i in range(0, len(color), 3):
+                colors.append(np.asarray([[color[i],color[i+1],color[i+2]]]))
 
         # Para essa implementação, existem 'sets' de triângulos,
         # onde para cada set como [0, 1, 2, 3, -1] todos os triângulos
@@ -706,14 +728,16 @@ class GL:
             ]).T
 
             if colorPerVertex:
-                pass
-            else:
-                vertex_color = COLOR
+                point_colors = [colors[colorIndex[origin]], colors[colorIndex[i]], colors[colorIndex[i+1]]]
 
             # Aplica-se as matrizes de world, view e perspective, todas homogêneas
             t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.transformation_stack[-1]
 
             triangle = t_matrix @ triangle
+
+            # Precisamos extrair o z de cada vértice antes de fazer a Divisão Homogênea,
+            # pois para realizar a média harmônica precisamos do Z do espaço da câmera
+            vertexZs = (triangle[2][0], triangle[2][1], triangle[2][2])
 
             # Como agora temos termos diferente de zero no quarto componente, é
             # necessário fazer a Divisão Homogênea para normalizar esse componente
@@ -728,9 +752,9 @@ class GL:
 
             # Extraimos os vértices do triângulo em 2D e ordenamos para
             # realizar a checagem se os pontos estão dentro do plano do triângulo
-            p1 = (triangle[0][0], triangle[1][0])
-            p2 = (triangle[0][1], triangle[1][1])
-            p3 = (triangle[0][2], triangle[1][2])
+            p1 = (triangle[0][0], triangle[1][0], triangle[2][0])
+            p2 = (triangle[0][1], triangle[1][1], triangle[2][1])
+            p3 = (triangle[0][2], triangle[1][2], triangle[2][2])
             winding_ordered_points = GL.order_winding([p1, p2, p3])
 
             min_x, max_x = int(min([p1[0], p2[0], p3[0]]) - 1), int(max([p1[0], p2[0], p3[0]]) + 1)
@@ -739,8 +763,19 @@ class GL:
             # E finalmente, desenhamos o triângulo
             for y in range(min_y, max_y):
                 for x in range(min_x, max_x):
-                    if 0 <= x < GL.width and 0 <= y < GL.height:
-                        GL.is_inside(winding_ordered_points, (x, y), vertex_color)
+                    if 0 <= x < GL.width and 0 <= y < GL.height and GL.is_inside(winding_ordered_points, (x, y)):
+                        if colorPerVertex:
+                            alpha, beta, gamma = GL.calculate_baricentric_coordinates(p1, p2, p3, (x, y))
+
+                            # Construimos o Z projetado do ponto amostrado, usando a média harmônica ponderada
+                            # das coordenadas baricêntricas 
+                            Z = 1 / (alpha * 1/vertexZs[0] + beta * 1/vertexZs[1] + gamma * 1/vertexZs[2]) 
+
+                            # E usamos a divisão pelo Z dos vértices e então uma multiplicação pelo Z do ponto amostrado
+                            # transformando a interpolação numa transformação afim
+                            COLOR = Z * (alpha * point_colors[0][:] / vertexZs[0] + beta * point_colors[1][:] / vertexZs[1] + gamma * point_colors[2][:] / vertexZs[2])
+                            COLOR = [round(255*i) for i in COLOR[0]]
+                        gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, COLOR)
 
             i += 1
 
