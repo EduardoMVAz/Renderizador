@@ -695,6 +695,14 @@ class GL:
             for i in range(0, len(color), 3):
                 colors.append(np.asarray([[color[i],color[i+1],color[i+2]]]))
 
+        hasTexture = False
+        if len(current_texture) != 0:
+            hasTexture = True
+            texture = gpu.GPU.load_texture(current_texture[0])
+            textures = []
+            for i in range(0, len(texCoord), 2):
+                textures.append([round(texCoord[i]), round(texCoord[i+1])])
+
         # Para essa implementação, existem 'sets' de triângulos,
         # onde para cada set como [0, 1, 2, 3, -1] todos os triângulos
         # compartilham do vértice 0, sendo que o valor -1 sinaliza o fim
@@ -730,6 +738,9 @@ class GL:
             if colorPerVertex:
                 point_colors = [colors[colorIndex[origin]], colors[colorIndex[i]], colors[colorIndex[i+1]]]
 
+            if hasTexture:
+                point_texture_uv = [textures[texCoordIndex[origin]], textures[texCoordIndex[i]], textures[texCoordIndex[i+1]]]
+
             # Aplica-se as matrizes de world, view e perspective, todas homogêneas
             t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.transformation_stack[-1]
 
@@ -764,7 +775,7 @@ class GL:
             for y in range(min_y, max_y):
                 for x in range(min_x, max_x):
                     if 0 <= x < GL.width and 0 <= y < GL.height and GL.is_inside(winding_ordered_points, (x, y)):
-                        if colorPerVertex:
+                        if colorPerVertex or hasTexture:
                             alpha, beta, gamma = GL.calculate_baricentric_coordinates(p1, p2, p3, (x, y))
 
                             # Construimos o Z projetado do ponto amostrado, usando a média harmônica ponderada
@@ -773,8 +784,33 @@ class GL:
 
                             # E usamos a divisão pelo Z dos vértices e então uma multiplicação pelo Z do ponto amostrado
                             # transformando a interpolação numa transformação afim
-                            COLOR = Z * (alpha * point_colors[0][:] / vertexZs[0] + beta * point_colors[1][:] / vertexZs[1] + gamma * point_colors[2][:] / vertexZs[2])
-                            COLOR = [round(255*i) for i in COLOR[0]]
+                            
+                            # Portanto, o valor de cor/textura será o valor interpolado entre os valores
+                            # dos vértices, usado o cálculo baricêntrico.
+
+                            if colorPerVertex:
+                                COLOR = Z * (alpha * point_colors[0][:] / vertexZs[0] + beta * point_colors[1][:] / vertexZs[1] + gamma * point_colors[2][:] / vertexZs[2])
+                                COLOR = [round(255*i) for i in COLOR[0]]
+                            if hasTexture:
+                                h, w = texture.shape[:2]
+                                h, w = h-1, w-1
+
+                                u = (
+                                    alpha*(point_texture_uv[0][0]/vertexZs[0]) 
+                                    + beta*(point_texture_uv[1][0]/vertexZs[1]) 
+                                    + gamma*(point_texture_uv[2][0]/vertexZs[2])
+                                ) * Z
+
+                                v = (
+                                    alpha*(point_texture_uv[0][1]/vertexZs[0])
+                                    + beta*(point_texture_uv[1][1]/vertexZs[1])
+                                    + gamma*(point_texture_uv[2][1]/vertexZs[2])
+                                ) * Z
+
+                                u = round(u*w) if u*w < w else w 
+                                v = -round(v*h) if v*h < h else h
+                                COLOR = texture[u][v][:3]
+
                         gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, COLOR)
 
             i += 1
