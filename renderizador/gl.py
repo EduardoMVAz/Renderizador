@@ -6,7 +6,7 @@
 """
 Biblioteca Gráfica / Graphics Library.
 
-Desenvolvido por: <SEU NOME AQUI>
+Desenvolvido por: Eduardo Mendes Vaz
 Disciplina: Computação Gráfica
 Data: <DATA DE INÍCIO DA IMPLEMENTAÇÃO>
 """
@@ -23,6 +23,16 @@ class GL:
     height = 600  # altura da tela
     near = 0.01   # plano de corte próximo
     far = 1000    # plano de corte distante
+    supersampling_ratio = 2
+
+    eps = 1e-12
+
+    def normalize(v):
+        norm = np.linalg.norm(v)
+        if norm < GL.eps:
+            return np.zeros_like(v)
+        return v / norm
+
 
     @staticmethod
     def order_winding(points):
@@ -141,7 +151,8 @@ class GL:
             if norm == 0:
                 return (0, 0, 0, 1)
             
-            normalized_vector = vector / norm
+            normalized_vector = GL.normalize(vector)
+            
             ux, uy, uz = normalized_vector
 
             return (
@@ -171,13 +182,13 @@ class GL:
         câmera.
         """
         w = at - eye
-        w = w / float(np.linalg.norm(w))
+        w = GL.normalize(w)
 
         u = np.linalg.cross(w, up)
-        u = u / float(np.linalg.norm(u))
+        u = GL.normalize(u)
 
         v = np.linalg.cross(u, w)
-        v = v / float(np.linalg.norm(v))
+        v = GL.normalize(v)
 
         R = np.array([
             [u[0], v[0], -w[0], 0],
@@ -221,8 +232,8 @@ class GL:
         de coordenada de pixels.
         """
         return np.array([
-            [W/2, 0, 0, W/2],
-            [0, -H/2, 0, H/2],
+            [W/2*GL.supersampling_ratio, 0, 0, W/2*GL.supersampling_ratio],
+            [0, -H/2*GL.supersampling_ratio, 0, H/2*GL.supersampling_ratio],
             [0, 0, 1, 0],
             [0, 0, 0, 1]
         ])
@@ -238,6 +249,17 @@ class GL:
         gamma = 1 - alpha - beta 
 
         return round(alpha, 3), round(beta, 3), round(gamma, 3)
+    
+
+
+    @staticmethod
+    def calculate_face_normal(p0, p1, p2):
+        v0 = p1 - p0
+        v1 = p2 - p0
+
+        n = np.cross(v0, v1)
+
+        return GL.normalize(n)
 
     @staticmethod 
     def draw_triangle(triangle: np.ndarray, colorPerVertex: bool, hasTexture: bool, hasTransparency: bool, info: dict):
@@ -245,6 +267,13 @@ class GL:
         t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.transformation_stack[-1]
 
         triangle = t_matrix @ triangle
+
+        # Extraio os vértices para fazer o cálculo da normal da face
+        p0 = np.array([triangle[0][0], triangle[1][0], triangle[2][0]])
+        p1 = np.array([triangle[0][1], triangle[1][1], triangle[2][1]])
+        p2 = np.array([triangle[0][2], triangle[1][2], triangle[2][2]])
+
+        normal = GL.calculate_face_normal(p0, p1, p2)
 
         # Precisamos extrair o z de cada vértice antes de fazer a Divisão Homogênea,
         # pois para realizar a média harmônica precisamos do Z do espaço da câmera
@@ -276,7 +305,7 @@ class GL:
         # E finalmente, desenhamos o triângulo
         for y in range(min_y, max_y):
             for x in range(min_x, max_x):
-                if x < 0 or x >= GL.width or y < 0 or y >= GL.height or not GL.is_inside(winding_ordered_points, (x, y)):
+                if x < 0 or x >= GL.width*GL.supersampling_ratio or y < 0 or y >= GL.height*GL.supersampling_ratio or not GL.is_inside(winding_ordered_points, (x, y)):
                     continue
 
                 # Calculamos os valores de alpha, beta e gamma do nosso ponto amostrado.
@@ -304,7 +333,8 @@ class GL:
 
                     if colorPerVertex:
                         color = Z * (alpha * info["point_colors"][0][:] / vertexZs[0] + beta * info["point_colors"][1][:] / vertexZs[1] + gamma * info["point_colors"][2][:] / vertexZs[2])
-                        color = [round(255*i) for i in color[0]]
+                        color = color[0]
+                        color = [max(0,min(round(255*i),255)) for i in color]
                     if hasTexture:
                         h, w = info["texture"].shape[:2]
                         h, w = h-1, w-1
@@ -323,17 +353,33 @@ class GL:
 
                         u = round(u*w) if u*w < w else w 
                         v = -round(v*h) if v*h < h else h
-                        color = info["texture"][u][v]
+                        color = info["texture"][u][v][:3]
+
+                if color is None:
+                    color = info["emissiveColor"]
 
                 # Em caso de transparência
-                if color is None:
-                    color = info["color"]
-
                 if hasTransparency: 
                     oldColor = gpu.GPU.read_pixel([x, y], gpu.GPU.RGB8)
                     color = color * info["transparency"] + oldColor * (1 - info["transparency"])
 
-                
+                if GL.lightinfo and not hasTexture:
+                    if GL.lightinfo.get("type") :
+                        #TODO luz ponto
+                        pass
+
+                    l = GL.normalize(-GL.lightinfo["direction"])
+                    v = GL.normalize(GL.eye + l)
+
+                    ambientI = GL.lightinfo["ambientIntensity"] * np.array(info["diffuseColor"]) * info["ambientIntensity"]
+                    diffuseI = GL.lightinfo["intensity"] * np.array(info["diffuseColor"]) * np.dot(normal, l)
+                    specularI = GL.lightinfo["intensity"] * np.array(info["specularColor"]) * np.dot(normal, v) ** (info["shininess"] * 128)
+
+                    light_color = GL.lightinfo["color"] * (ambientI + diffuseI + specularI)
+
+                if not hasTexture and not colorPerVertex:
+                    color = [max(0,min(round(255*i),255)) for i in color]
+
                 gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, color[:3])
                 gpu.GPU.draw_pixel([x, y], gpu.GPU.DEPTH_COMPONENT32F, [zDepth])
                 color = None
@@ -351,6 +397,7 @@ class GL:
         GL.vision_perspective = []
         GL.perspective_matrix = np.identity(4)
         GL.screen_matrix = np.identity(4)
+        GL.lightinfo = {}
 
     @staticmethod
     def polypoint2D(point, colors):
@@ -505,6 +552,8 @@ class GL:
 
         print("USANDO FUNÇÃO: triangleSet")
 
+        print(colors)
+
         for i in range(0, len(point), 9):
             triangle = np.array([
                 [point[i], point[i+1], point[i+2], 1],  
@@ -514,7 +563,11 @@ class GL:
 
             info = {}
             
-            info["color"] = np.clip([255*i for i in colors["emissiveColor"]], 0, 255).astype(np.uint8)
+            info["emissiveColor"] = np.array(colors["emissiveColor"])
+            info["diffuseColor"] = np.array(colors["diffuseColor"])
+            info["ambientIntensity"] = colors["ambientIntensity"]
+            info["specularColor"] = np.array(colors["specularColor"])
+            info["shininess"] = colors["shininess"]
 
             hasTransparency = False
             if colors.get("transparency"):
@@ -553,13 +606,13 @@ class GL:
         # O valor de eye é a posição da câmera no espaço,
         # enquanto o valor de at é a posição do objeto para o qual
         # a câmera está apontando em relação à posição da câmera
-        eye = np.array(position)
-        at = eye + camera_forward
+        GL.eye = np.array(position)
+        at = GL.eye + camera_forward
     
         # Com essas informações e a informação do fov podemos
         # construir duas matrizes: A matriz de look at e a 
         # matriz de perspectiva.
-        view_matrix = GL.look_at_matrix(up=camera_up, at=at, eye=eye)
+        view_matrix = GL.look_at_matrix(up=camera_up, at=at, eye=GL.eye)
         GL.view_matrix = view_matrix
 
         # A matriz de perspectiva projeta os pontos 3D em 2D,
@@ -641,7 +694,7 @@ class GL:
 
             info = {}
             
-            info["color"] = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
+            info["emissiveColor"] = np.array(colors["emissiveColor"])
 
             hasTransparency = False
             if colors.get("transparency"):
@@ -684,7 +737,7 @@ class GL:
 
             info = {}
             
-            info["color"] = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
+            info["emissiveColor"] = np.array(colors["emissiveColor"])
 
             hasTransparency = False
             if colors.get("transparency"):
@@ -720,6 +773,7 @@ class GL:
         # implementadado um método para a leitura de imagens.
 
         print("USANDO FUNÇÃO: indexedFaceSet")
+        print(colors)
 
         if not colorPerVertex or not color or not colorIndex:
             colorPerVertex = False
@@ -735,9 +789,9 @@ class GL:
             hasTransparency = True
         
         if colorPerVertex:
-            colors = []
+            vertexColors = []
             for i in range(0, len(color), 3):
-                colors.append(np.asarray([[color[i],color[i+1],color[i+2]]]))
+                vertexColors.append(np.asarray([[color[i],color[i+1],color[i+2]]]))
 
         hasTexture = False
         if len(current_texture) != 0:
@@ -786,9 +840,14 @@ class GL:
             info = {}
 
             if colorPerVertex:
-                info["point_colors"] = [colors[colorIndex[origin]], colors[colorIndex[i]], colors[colorIndex[i+1]]]
+                info["point_colors"] = [vertexColors[colorIndex[origin]], vertexColors[colorIndex[i]], vertexColors[colorIndex[i+1]]]
             else:
-                info["color"] = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
+                info["emissiveColor"] = np.array(colors["emissiveColor"])
+
+            info["diffuseColor"] = np.array(colors["diffuseColor"])
+            info["ambientIntensity"] = colors["ambientIntensity"]
+            info["specularColor"] = np.array(colors["specularColor"])
+            info["shininess"] = colors["shininess"]
 
             if hasTexture:
                 info["point_texture_uv"] = [textures[texCoordIndex[origin]], textures[texCoordIndex[i]], textures[texCoordIndex[i+1]]]
@@ -874,6 +933,14 @@ class GL:
 
         # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
         print("NavigationInfo : headlight = {0}".format(headlight)) # imprime no terminal
+        if headlight:
+            GL.lightinfo = {
+                "type": "directional",
+                "intensity": 1.0,
+                "color": np.array([1, 1, 1]),
+                "ambientIntensity": 0.0,
+                "direction": np.array([0, 0, -1])
+            }
 
     @staticmethod
     def directionalLight(ambientIntensity, color, intensity, direction):
@@ -891,6 +958,14 @@ class GL:
         print("DirectionalLight : intensity = {0}".format(intensity)) # imprime no terminal
         print("DirectionalLight : direction = {0}".format(direction)) # imprime no terminal
 
+        GL.lightinfo = {
+            "type": "directional",
+            "intensity": intensity,
+            "color": np.array(color),
+            "ambientIntensity": ambientIntensity,
+            "direction": np.array(direction)
+        }
+
     @staticmethod
     def pointLight(ambientIntensity, color, intensity, location):
         """Luz pontual."""
@@ -906,6 +981,14 @@ class GL:
         print("PointLight : color = {0}".format(color)) # imprime no terminal
         print("PointLight : intensity = {0}".format(intensity)) # imprime no terminal
         print("PointLight : location = {0}".format(location)) # imprime no terminal
+
+        GL.lightinfo = {
+            "type": "point",
+            "intensity": intensity,
+            "color": np.array(color, dtype=float),
+            "ambientIntensity": ambientIntensity,
+            "location": np.array(location, dtype=float)
+        }
 
     @staticmethod
     def fog(visibilityRange, color):

@@ -45,18 +45,17 @@ class Renderizador:
         # Configurando color buffers para exibição na tela
 
         # Cria uma (1) posição de FrameBuffer na GPU
-        fbo = gpu.GPU.gen_framebuffers(1)
+        fbo = gpu.GPU.gen_framebuffers(2)
 
         # Define o atributo FRONT como o FrameBuffer principal
         self.framebuffers["FRONT"] = fbo[0]
 
         # Cria uma posição para o FrameBuffer de
         # supersampling na GPU
-        # fbs = gpu.GPU.gen_framebuffers(1)
-        # self.framebuffers["SUPERSAMPLED"] = fbs[0]
+        self.framebuffers["SUPERSAMPLED"] = fbo[1]
 
         # Define que a posição criada será usada para desenho e leitura
-        gpu.GPU.bind_framebuffer(gpu.GPU.FRAMEBUFFER, self.framebuffers["FRONT"])
+        gpu.GPU.bind_framebuffer(gpu.GPU.FRAMEBUFFER, self.framebuffers["SUPERSAMPLED"])
         # Opções:
         # - DRAW_FRAMEBUFFER: Faz o bind só para escrever no framebuffer
         # - READ_FRAMEBUFFER: Faz o bind só para leitura no framebuffer
@@ -75,21 +74,21 @@ class Renderizador:
 
         # Descomente as seguintes linhas se for usar um Framebuffer para profundidade
         gpu.GPU.framebuffer_storage(
-            self.framebuffers["FRONT"],
+            self.framebuffers["SUPERSAMPLED"],
             gpu.GPU.DEPTH_ATTACHMENT,
             gpu.GPU.DEPTH_COMPONENT32F,
-            self.width,
-            self.height
+            self.width * self.supersampling_ratio,
+            self.height * self.supersampling_ratio
         )
 
         # Memória de Framebuffer para supersampling
-        # gpu.GPU.framebuffer_storage(
-        #     self.framebuffers["SUPERSAMPLED"],
-        #     gpu.GPU.COLOR_ATTACHMENT,
-        #     gpu.GPU.RGB8,
-        #     self.width * self.supersampling_ratio,
-        #     self.height * self.supersampling_ratio
-        # )
+        gpu.GPU.framebuffer_storage(
+            self.framebuffers["SUPERSAMPLED"],
+            gpu.GPU.COLOR_ATTACHMENT,
+            gpu.GPU.RGB8,
+            self.width * self.supersampling_ratio,
+            self.height * self.supersampling_ratio
+        )
     
         # Opções:
         # - COLOR_ATTACHMENT: alocações para as cores da imagem renderizada
@@ -133,23 +132,24 @@ class Renderizador:
         # ao final da renderização de um frame. Como por exemplo, executar
         # downscaling da imagem.
 
-        # regular_framebuffer = np.zeros((self.height, self.width, 3))
-        # for i in range(regular_framebuffer.shape[0]):
-        #     for j in range(regular_framebuffer.shape[1]):
-        #         supersampled_pixels = [
-        #             gpu.GPU.read_pixel([j+sj, i+si], gpu.GPU.RGB8)
-        #             for si in range(3)
-        #             for sj in range(3)
-        #         ]
+        regular_framebuffer = np.zeros((self.height, self.width, 3))
+        for i in range(0, regular_framebuffer.shape[0]):
+            for j in range(0, regular_framebuffer.shape[1]):
+                supersampled_pixels = [
+                    gpu.GPU.read_pixel([
+                        j * self.supersampling_ratio + sj, 
+                        i * self.supersampling_ratio + si
+                    ], gpu.GPU.RGB8)
+                    for si in range(self.supersampling_ratio)
+                    for sj in range(self.supersampling_ratio)
+                ]
 
-        #         regular_framebuffer[i, j] = np.mean(supersampled_pixels, axis=0)
+                regular_framebuffer[i, j] = np.mean(supersampled_pixels, axis=0)
 
-        # gpu.GPU.bind_framebuffer(gpu.GPU.FRAMEBUFFER, self.framebuffers["FRONT"])
-        # for i in range(regular_framebuffer.shape[0]):
-        #     for j in range(regular_framebuffer.shape[1]):
-        #         gpu.GPU.draw_pixel([j, i], gpu.GPU.RGB8, regular_framebuffer[i, j])
-
-        # gpu.GPU.bind_framebuffer(gpu.GPU.FRAMEBUFFER, self.framebuffers["SUPERSAMPLED"])
+        gpu.GPU.bind_framebuffer(gpu.GPU.FRAMEBUFFER, self.framebuffers["FRONT"])
+        for i in range(regular_framebuffer.shape[0]):
+            for j in range(regular_framebuffer.shape[1]):
+                gpu.GPU.draw_pixel([j, i], gpu.GPU.RGB8, regular_framebuffer[i, j])
 
         # Método para a troca dos buffers (NÃO IMPLEMENTADO)
         # Esse método será utilizado na fase de implementação de animações
