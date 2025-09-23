@@ -239,6 +239,105 @@ class GL:
 
         return round(alpha, 3), round(beta, 3), round(gamma, 3)
 
+    @staticmethod 
+    def draw_triangle(triangle: np.ndarray, colorPerVertex: bool, hasTexture: bool, hasTransparency: bool, info: dict):
+        # Primeiramente, aplicamos as matrizes de world, view e perspective, todas homogêneas
+        t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.transformation_stack[-1]
+
+        triangle = t_matrix @ triangle
+
+        # Precisamos extrair o z de cada vértice antes de fazer a Divisão Homogênea,
+        # pois para realizar a média harmônica precisamos do Z do espaço da câmera
+        vertexZs = (triangle[2][0], triangle[2][1], triangle[2][2])
+
+        # Como agora temos termos diferente de zero no quarto componente, é
+        # necessário fazer a Divisão Homogênea para normalizar esse componente
+        # novamente.
+        triangle[0, :] = triangle[0, :] / triangle[3, :]
+        triangle[1, :] = triangle[1, :] / triangle[3, :]
+        triangle[2, :] = triangle[2, :] / triangle[3, :]
+        triangle[3, :] = triangle[3, :] / triangle[3, :]
+
+        # Aplicamos a matriz de transformação para a tela, após o Homogeneous Divide
+        triangle = GL.screen_transformation_matrix(GL.width, GL.height) @ triangle
+
+        # Extraimos os vértices do triângulo em 2D e ordenamos para
+        # realizar a checagem se os pontos estão dentro do plano do triângulo
+        p1 = (triangle[0][0], triangle[1][0], triangle[2][0])
+        p2 = (triangle[0][1], triangle[1][1], triangle[2][1])
+        p3 = (triangle[0][2], triangle[1][2], triangle[2][2])
+        winding_ordered_points = GL.order_winding([p1, p2, p3])
+
+        min_x, max_x = int(min([p1[0], p2[0], p3[0]]) - 1), int(max([p1[0], p2[0], p3[0]]) + 1)
+        min_y, max_y = int(min([p1[1], p2[1], p3[1]]) - 1), int(max([p1[1], p2[1], p3[1]]) + 1)
+
+        color = None
+
+        # E finalmente, desenhamos o triângulo
+        for y in range(min_y, max_y):
+            for x in range(min_x, max_x):
+                if x < 0 or x >= GL.width or y < 0 or y >= GL.height or not GL.is_inside(winding_ordered_points, (x, y)):
+                    continue
+
+                # Calculamos os valores de alpha, beta e gamma do nosso ponto amostrado.
+                alpha, beta, gamma = GL.calculate_baricentric_coordinates(p1, p2, p3, (x, y))
+                
+                # Precisamos calcular o Z de profundidade,
+                # e usar esse valor para comparar com a menor distância 
+                # salva no ZBuffer até então, para desenhar o objeto mais
+                # próximo.
+                zDepth = alpha * vertexZs[0] + beta * vertexZs[1] + gamma * vertexZs[2]
+                if gpu.GPU.read_pixel([x,y], gpu.GPU.DEPTH_COMPONENT32F) < zDepth:
+                    continue
+
+                if colorPerVertex or hasTexture:
+
+                    # Construimos o Z projetado do ponto amostrado, usando a média harmônica ponderada
+                    # das coordenadas baricêntricas 
+                    Z = 1 / (alpha * 1/vertexZs[0] + beta * 1/vertexZs[1] + gamma * 1/vertexZs[2]) 
+
+                    # E usamos a divisão pelo Z dos vértices e então uma multiplicação pelo Z do ponto amostrado
+                    # transformando a interpolação numa transformação afim
+                    
+                    # Portanto, o valor de cor/textura será o valor interpolado entre os valores
+                    # dos vértices, usado o cálculo baricêntrico.
+
+                    if colorPerVertex:
+                        color = Z * (alpha * info["point_colors"][0][:] / vertexZs[0] + beta * info["point_colors"][1][:] / vertexZs[1] + gamma * info["point_colors"][2][:] / vertexZs[2])
+                        color = [round(255*i) for i in color[0]]
+                    if hasTexture:
+                        h, w = info["texture"].shape[:2]
+                        h, w = h-1, w-1
+
+                        u = (
+                            alpha*(info["point_texture_uv"][0][0]/vertexZs[0]) 
+                            + beta*(info["point_texture_uv"][1][0]/vertexZs[1]) 
+                            + gamma*(info["point_texture_uv"][2][0]/vertexZs[2])
+                        ) * Z
+
+                        v = (
+                            alpha*(info["point_texture_uv"][0][1]/vertexZs[0])
+                            + beta*(info["point_texture_uv"][1][1]/vertexZs[1])
+                            + gamma*(info["point_texture_uv"][2][1]/vertexZs[2])
+                        ) * Z
+
+                        u = round(u*w) if u*w < w else w 
+                        v = -round(v*h) if v*h < h else h
+                        color = info["texture"][u][v]
+
+                # Em caso de transparência
+                if color is None:
+                    color = info["color"]
+
+                if hasTransparency: 
+                    oldColor = gpu.GPU.read_pixel([x, y], gpu.GPU.RGB8)
+                    color = color * info["transparency"] + oldColor * (1 - info["transparency"])
+
+                
+                gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, color[:3])
+                gpu.GPU.draw_pixel([x, y], gpu.GPU.DEPTH_COMPONENT32F, [zDepth])
+                color = None
+
     @staticmethod
     def setup(width, height, near=0.01, far=1000):
         """Definr parametros para câmera de razão de aspecto, plano próximo e distante."""
@@ -368,6 +467,8 @@ class GL:
         # quantidade de pontos é sempre multiplo de 3, ou seja, 6 valores ou 12 valores, etc.
         # O parâmetro colors é um dicionário com os tipos cores possíveis, para o TriangleSet2D
         # você pode assumir inicialmente o desenho das linhas com a cor emissiva (emissiveColor).
+        print("USANDO FUNÇÃO: triangleSet2D")
+
         COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
 
         for i in range(0, len(vertices), 6):
@@ -401,7 +502,8 @@ class GL:
         # inicialmente, para o TriangleSet, o desenho das linhas com a cor emissiva
         # (emissiveColor), conforme implementar novos materias você deverá suportar outros
         # tipos de cores.
-        COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
+
+        print("USANDO FUNÇÃO: triangleSet")
 
         for i in range(0, len(point), 9):
             triangle = np.array([
@@ -410,38 +512,16 @@ class GL:
                 [point[i+6], point[i+7], point[i+8], 1]
             ]).T
 
-            # Aplica-se as matrizes de world, view e perspective, todas homogêneas
-            t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.transformation_stack[-1]
-
-            triangle = t_matrix @ triangle
-
-            # Como agora temos termos diferente de zero no quarto componente, é
-            # necessário fazer a Divisão Homogênea para normalizar esse componente
-            # novamente.
-            triangle[0, :] = triangle[0, :] / triangle[3, :]
-            triangle[1, :] = triangle[1, :] / triangle[3, :]
-            triangle[2, :] = triangle[2, :] / triangle[3, :]
-            triangle[3, :] = triangle[3, :] / triangle[3, :]
-
-            # Aplicamos a matriz de transformação para a tela, após o Homogeneous Divide
-            triangle = GL.screen_transformation_matrix(GL.width, GL.height) @ triangle
-
-            # Extraimos os vértices do triângulo em 2D e ordenamos para
-            # realizar a checagem se os pontos estão dentro do plano do triângulo
-            p1 = (triangle[0][0], triangle[1][0])
-            p2 = (triangle[0][1], triangle[1][1])
-            p3 = (triangle[0][2], triangle[1][2])
-            winding_ordered_points = GL.order_winding([p1, p2, p3])
-
-            min_x, max_x = int(min([p1[0], p2[0], p3[0]]) - 1), int(max([p1[0], p2[0], p3[0]]) + 1)
-            min_y, max_y = int(min([p1[1], p2[1], p3[1]]) - 1), int(max([p1[1], p2[1], p3[1]]) + 1)
-
-            # E finalmente, desenhamos o triângulo
-            for y in range(min_y, max_y):
-                for x in range(min_x, max_x):
-                    if 0 <= x < GL.width and 0 <= y < GL.height and GL.is_inside(winding_ordered_points, (x, y)):
-                        gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, COLOR)
+            info = {}
             
+            info["color"] = np.clip([255*i for i in colors["emissiveColor"]], 0, 255).astype(np.uint8)
+
+            hasTransparency = False
+            if colors.get("transparency"):
+                info["transparency"] = colors["transparency"]
+                hasTransparency = True
+
+            GL.draw_triangle(triangle=triangle, colorPerVertex=False, hasTexture=False, hasTransparency=hasTransparency, info=info)
 
     @staticmethod
     def viewpoint(position, orientation, fieldOfView):
@@ -546,7 +626,7 @@ class GL:
         # depois 2, 3 e 4, e assim por diante. Cuidado com a orientação dos vértices, ou seja,
         # todos no sentido horário ou todos no sentido anti-horário, conforme especificado.
 
-        COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
+        print("USANDO FUNÇÃO: triangleStripSet")
 
         # Única alteração feita sobre o código de triangle set
         # é que agora nós percorremos de 3 em 3, ao invés de 9
@@ -559,37 +639,16 @@ class GL:
                 [point[i+6], point[i+7], point[i+8], 1]
             ]).T
 
-            # Aplica-se as matrizes de world, view e perspective, todas homogêneas
-            t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.transformation_stack[-1]
+            info = {}
+            
+            info["color"] = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
 
-            triangle = t_matrix @ triangle
+            hasTransparency = False
+            if colors.get("transparency"):
+                info["transparency"] = colors["transparency"]
+                hasTransparency = True
 
-            # Como agora temos termos diferente de zero no quarto componente, é
-            # necessário fazer a Divisão Homogênea para normalizar esse componente
-            # novamente.
-            triangle[0, :] = triangle[0, :] / triangle[3, :]
-            triangle[1, :] = triangle[1, :] / triangle[3, :]
-            triangle[2, :] = triangle[2, :] / triangle[3, :]
-            triangle[3, :] = triangle[3, :] / triangle[3, :]
-
-            # Aplicamos a matriz de transformação para a tela, após o Homogeneous Divide
-            triangle = GL.screen_transformation_matrix(GL.width, GL.height) @ triangle
-
-            # Extraimos os vértices do triângulo em 2D e ordenamos para
-            # realizar a checagem se os pontos estão dentro do plano do triângulo
-            p1 = (triangle[0][0], triangle[1][0])
-            p2 = (triangle[0][1], triangle[1][1])
-            p3 = (triangle[0][2], triangle[1][2])
-            winding_ordered_points = GL.order_winding([p1, p2, p3])
-
-            min_x, max_x = int(min([p1[0], p2[0], p3[0]]) - 1), int(max([p1[0], p2[0], p3[0]]) + 1)
-            min_y, max_y = int(min([p1[1], p2[1], p3[1]]) - 1), int(max([p1[1], p2[1], p3[1]]) + 1)
-
-            # E finalmente, desenhamos o triângulo
-            for y in range(min_y, max_y):
-                for x in range(min_x, max_x):
-                    if 0 <= x < GL.width and 0 <= y < GL.height and GL.is_inside(winding_ordered_points, (x, y)):
-                        gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, COLOR)
+            GL.draw_triangle(triangle=triangle, colorPerVertex=False, hasTexture=False, hasTransparency=hasTransparency, info=info)
 
     @staticmethod
     def indexedTriangleStripSet(point, index, colors):
@@ -607,7 +666,7 @@ class GL:
         # depois 2, 3 e 4, e assim por diante. Cuidado com a orientação dos vértices, ou seja,
         # todos no sentido horário ou todos no sentido anti-horário, conforme especificado.
 
-        COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
+        print("USANDO FUNÇÃO: indexedTriangleStripSet")
 
         # Para essa implementação, é possível construir uma lista de pontos, 
         # e portanto, acessar/armazenar cada vértice apenas uma vez, devido
@@ -623,37 +682,16 @@ class GL:
                 vertices[index[i+2]]
             ]).T
 
-            # Aplica-se as matrizes de world, view e perspective, todas homogêneas
-            t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.transformation_stack[-1]
+            info = {}
+            
+            info["color"] = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
 
-            triangle = t_matrix @ triangle
+            hasTransparency = False
+            if colors.get("transparency"):
+                info["transparency"] = colors["transparency"]
+                hasTransparency = True
 
-            # Como agora temos termos diferente de zero no quarto componente, é
-            # necessário fazer a Divisão Homogênea para normalizar esse componente
-            # novamente.
-            triangle[0, :] = triangle[0, :] / triangle[3, :]
-            triangle[1, :] = triangle[1, :] / triangle[3, :]
-            triangle[2, :] = triangle[2, :] / triangle[3, :]
-            triangle[3, :] = triangle[3, :] / triangle[3, :]
-
-            # Aplicamos a matriz de transformação para a tela, após o Homogeneous Divide
-            triangle = GL.screen_transformation_matrix(GL.width, GL.height) @ triangle
-
-            # Extraimos os vértices do triângulo em 2D e ordenamos para
-            # realizar a checagem se os pontos estão dentro do plano do triângulo
-            p1 = (triangle[0][0], triangle[1][0])
-            p2 = (triangle[0][1], triangle[1][1])
-            p3 = (triangle[0][2], triangle[1][2])
-            winding_ordered_points = GL.order_winding([p1, p2, p3])
-
-            min_x, max_x = int(min([p1[0], p2[0], p3[0]]) - 1), int(max([p1[0], p2[0], p3[0]]) + 1)
-            min_y, max_y = int(min([p1[1], p2[1], p3[1]]) - 1), int(max([p1[1], p2[1], p3[1]]) + 1)
-
-            # E finalmente, desenhamos o triângulo
-            for y in range(min_y, max_y):
-                for x in range(min_x, max_x):
-                    if 0 <= x < GL.width and 0 <= y < GL.height and GL.is_inside(winding_ordered_points, (x, y)):
-                        gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, COLOR)
+            GL.draw_triangle(triangle=triangle, colorPerVertex=False, hasTexture=False, hasTransparency=hasTransparency, info=info)
             
 
     @staticmethod
@@ -681,16 +719,21 @@ class GL:
         # cor da textura conforme a posição do mapeamento. Dentro da classe GPU já está
         # implementadado um método para a leitura de imagens.
 
+        print("USANDO FUNÇÃO: indexedFaceSet")
+
         if not colorPerVertex or not color or not colorIndex:
             colorPerVertex = False
-            COLOR = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
 
         # Criamos a lista de vértices
         vertices = []
         for i in range(0, len(coord), 3):
             vertices.append((coord[i], coord[i+1], coord[i+2], 1))
+
+        hasTransparency = False
+        if colors.get("transparency"):
+            info["transparency"] = colors["transparency"]
+            hasTransparency = True
         
-        colors = None
         if colorPerVertex:
             colors = []
             for i in range(0, len(color), 3):
@@ -703,6 +746,10 @@ class GL:
             textures = []
             for i in range(0, len(texCoord), 2):
                 textures.append([round(texCoord[i]), round(texCoord[i+1])])
+
+            # TODO: MAIS UM PROBLEMA: O TRI_TEXTURE VEM SEM TEXCOORDINDEX
+            if not texCoordIndex:
+                texCoordIndex = coordIndex
 
         # Para essa implementação, existem 'sets' de triângulos,
         # onde para cada set como [0, 1, 2, 3, -1] todos os triângulos
@@ -736,83 +783,18 @@ class GL:
                 vertices[coordIndex[i+1]]
             ]).T
 
+            info = {}
+
             if colorPerVertex:
-                point_colors = [colors[colorIndex[origin]], colors[colorIndex[i]], colors[colorIndex[i+1]]]
+                info["point_colors"] = [colors[colorIndex[origin]], colors[colorIndex[i]], colors[colorIndex[i+1]]]
+            else:
+                info["color"] = [int(255 * colors['emissiveColor'][i]) for i in range(len(colors["emissiveColor"]))]
 
             if hasTexture:
-                point_texture_uv = [textures[texCoordIndex[origin]], textures[texCoordIndex[i]], textures[texCoordIndex[i+1]]]
+                info["point_texture_uv"] = [textures[texCoordIndex[origin]], textures[texCoordIndex[i]], textures[texCoordIndex[i+1]]]
+                info["texture"] = texture
 
-            # Aplica-se as matrizes de world, view e perspective, todas homogêneas
-            t_matrix = GL.perspective_matrix @ GL.view_matrix @ GL.transformation_stack[-1]
-
-            triangle = t_matrix @ triangle
-
-            # Precisamos extrair o z de cada vértice antes de fazer a Divisão Homogênea,
-            # pois para realizar a média harmônica precisamos do Z do espaço da câmera
-            vertexZs = (triangle[2][0], triangle[2][1], triangle[2][2])
-
-            # Como agora temos termos diferente de zero no quarto componente, é
-            # necessário fazer a Divisão Homogênea para normalizar esse componente
-            # novamente.
-            triangle[0, :] = triangle[0, :] / triangle[3, :]
-            triangle[1, :] = triangle[1, :] / triangle[3, :]
-            triangle[2, :] = triangle[2, :] / triangle[3, :]
-            triangle[3, :] = triangle[3, :] / triangle[3, :]
-
-            # Aplicamos a matriz de transformação para a tela, após o Homogeneous Divide
-            triangle = GL.screen_transformation_matrix(GL.width, GL.height) @ triangle
-
-            # Extraimos os vértices do triângulo em 2D e ordenamos para
-            # realizar a checagem se os pontos estão dentro do plano do triângulo
-            p1 = (triangle[0][0], triangle[1][0], triangle[2][0])
-            p2 = (triangle[0][1], triangle[1][1], triangle[2][1])
-            p3 = (triangle[0][2], triangle[1][2], triangle[2][2])
-            winding_ordered_points = GL.order_winding([p1, p2, p3])
-
-            min_x, max_x = int(min([p1[0], p2[0], p3[0]]) - 1), int(max([p1[0], p2[0], p3[0]]) + 1)
-            min_y, max_y = int(min([p1[1], p2[1], p3[1]]) - 1), int(max([p1[1], p2[1], p3[1]]) + 1)
-
-            # E finalmente, desenhamos o triângulo
-            for y in range(min_y, max_y):
-                for x in range(min_x, max_x):
-                    if 0 <= x < GL.width and 0 <= y < GL.height and GL.is_inside(winding_ordered_points, (x, y)):
-                        if colorPerVertex or hasTexture:
-                            alpha, beta, gamma = GL.calculate_baricentric_coordinates(p1, p2, p3, (x, y))
-
-                            # Construimos o Z projetado do ponto amostrado, usando a média harmônica ponderada
-                            # das coordenadas baricêntricas 
-                            Z = 1 / (alpha * 1/vertexZs[0] + beta * 1/vertexZs[1] + gamma * 1/vertexZs[2]) 
-
-                            # E usamos a divisão pelo Z dos vértices e então uma multiplicação pelo Z do ponto amostrado
-                            # transformando a interpolação numa transformação afim
-                            
-                            # Portanto, o valor de cor/textura será o valor interpolado entre os valores
-                            # dos vértices, usado o cálculo baricêntrico.
-
-                            if colorPerVertex:
-                                COLOR = Z * (alpha * point_colors[0][:] / vertexZs[0] + beta * point_colors[1][:] / vertexZs[1] + gamma * point_colors[2][:] / vertexZs[2])
-                                COLOR = [round(255*i) for i in COLOR[0]]
-                            if hasTexture:
-                                h, w = texture.shape[:2]
-                                h, w = h-1, w-1
-
-                                u = (
-                                    alpha*(point_texture_uv[0][0]/vertexZs[0]) 
-                                    + beta*(point_texture_uv[1][0]/vertexZs[1]) 
-                                    + gamma*(point_texture_uv[2][0]/vertexZs[2])
-                                ) * Z
-
-                                v = (
-                                    alpha*(point_texture_uv[0][1]/vertexZs[0])
-                                    + beta*(point_texture_uv[1][1]/vertexZs[1])
-                                    + gamma*(point_texture_uv[2][1]/vertexZs[2])
-                                ) * Z
-
-                                u = round(u*w) if u*w < w else w 
-                                v = -round(v*h) if v*h < h else h
-                                COLOR = texture[u][v][:3]
-
-                        gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, COLOR)
+            GL.draw_triangle(triangle=triangle, colorPerVertex=colorPerVertex, hasTexture=hasTexture, hasTransparency=hasTransparency, info=info)
 
             i += 1
 

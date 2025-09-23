@@ -20,6 +20,9 @@ import gpu          # Simula os recursos de uma GPU
 import x3d          # Faz a leitura do arquivo X3D, gera o grafo de cena e faz traversal
 import scenegraph   # Imprime o grafo de cena no console
 
+import math
+import numpy as np
+
 LARGURA = 60  # Valor padrão para largura da tela
 ALTURA = 40   # Valor padrão para altura da tela
 
@@ -35,6 +38,7 @@ class Renderizador:
         self.image_file = "tela.png"
         self.scene = None
         self.framebuffers = {}
+        self.supersampling_ratio = 2
 
     def setup(self):
         """Configura o sistema para a renderização."""
@@ -43,8 +47,13 @@ class Renderizador:
         # Cria uma (1) posição de FrameBuffer na GPU
         fbo = gpu.GPU.gen_framebuffers(1)
 
-        # Define o atributo FRONT como o FrameBuffe principal
+        # Define o atributo FRONT como o FrameBuffer principal
         self.framebuffers["FRONT"] = fbo[0]
+
+        # Cria uma posição para o FrameBuffer de
+        # supersampling na GPU
+        # fbs = gpu.GPU.gen_framebuffers(1)
+        # self.framebuffers["SUPERSAMPLED"] = fbs[0]
 
         # Define que a posição criada será usada para desenho e leitura
         gpu.GPU.bind_framebuffer(gpu.GPU.FRAMEBUFFER, self.framebuffers["FRONT"])
@@ -65,12 +74,21 @@ class Renderizador:
         )
 
         # Descomente as seguintes linhas se for usar um Framebuffer para profundidade
+        gpu.GPU.framebuffer_storage(
+            self.framebuffers["FRONT"],
+            gpu.GPU.DEPTH_ATTACHMENT,
+            gpu.GPU.DEPTH_COMPONENT32F,
+            self.width,
+            self.height
+        )
+
+        # Memória de Framebuffer para supersampling
         # gpu.GPU.framebuffer_storage(
-        #     self.framebuffers["FRONT"],
-        #     gpu.GPU.DEPTH_ATTACHMENT,
-        #     gpu.GPU.DEPTH_COMPONENT32F,
-        #     self.width,
-        #     self.height
+        #     self.framebuffers["SUPERSAMPLED"],
+        #     gpu.GPU.COLOR_ATTACHMENT,
+        #     gpu.GPU.RGB8,
+        #     self.width * self.supersampling_ratio,
+        #     self.height * self.supersampling_ratio
         # )
     
         # Opções:
@@ -89,7 +107,9 @@ class Renderizador:
 
         # Define a profundidade que ira apagar o FrameBuffer quando clear_buffer() invocado
         # Assuma 1.0 o mais afastado e -1.0 o mais próximo da camera
-        gpu.GPU.clear_depth(1.0)
+
+        # Inicializado com infinito, de acordo com o slide
+        gpu.GPU.clear_depth(math.inf)
 
         # Definindo tamanho do Viewport para renderização
         self.scene.viewport(width=self.width, height=self.height)
@@ -112,6 +132,24 @@ class Renderizador:
         # Essa é uma chamada conveniente para manipulação de buffers
         # ao final da renderização de um frame. Como por exemplo, executar
         # downscaling da imagem.
+
+        # regular_framebuffer = np.zeros((self.height, self.width, 3))
+        # for i in range(regular_framebuffer.shape[0]):
+        #     for j in range(regular_framebuffer.shape[1]):
+        #         supersampled_pixels = [
+        #             gpu.GPU.read_pixel([j+sj, i+si], gpu.GPU.RGB8)
+        #             for si in range(3)
+        #             for sj in range(3)
+        #         ]
+
+        #         regular_framebuffer[i, j] = np.mean(supersampled_pixels, axis=0)
+
+        # gpu.GPU.bind_framebuffer(gpu.GPU.FRAMEBUFFER, self.framebuffers["FRONT"])
+        # for i in range(regular_framebuffer.shape[0]):
+        #     for j in range(regular_framebuffer.shape[1]):
+        #         gpu.GPU.draw_pixel([j, i], gpu.GPU.RGB8, regular_framebuffer[i, j])
+
+        # gpu.GPU.bind_framebuffer(gpu.GPU.FRAMEBUFFER, self.framebuffers["SUPERSAMPLED"])
 
         # Método para a troca dos buffers (NÃO IMPLEMENTADO)
         # Esse método será utilizado na fase de implementação de animações
